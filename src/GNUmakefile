@@ -167,6 +167,9 @@ PKGS+=		$(shell $(PKGCONFIG) --exists libevent_openssl \
 PKGS+=		$(shell $(PKGCONFIG) --exists libevent_pthreads \
 		&& echo libevent_pthreads)
 endif
+ifndef FTS_BASE
+PKGS+=		$(shell $(PKGCONFIG) --exists fts && echo fts)
+endif
 TPKGS:=		
 ifndef CHECK_BASE
 TPKGS+=		$(shell $(PKGCONFIG) --exists check && echo check)
@@ -241,6 +244,9 @@ ifdef CHECK_FOUND
 TPKG_CPPFLAGS+=	-I$(CHECK_FOUND)/include
 TPKG_LDFLAGS+=	-L$(CHECK_FOUND)/lib
 TPKG_LIBS+=	-lcheck
+endif
+ifeq (,$(filter fts,$(PKGS)))
+PKG_LIBS+=	-lfts
 endif
 
 ifneq (,$(strip $(PKGS)))

@@ -9,7 +9,7 @@ define Package/sslsplit
   CATEGORY:=Network
   SUBMENU:=wireless
   TITLE:=Transparent SSL/TLS interception
-  DEPENDS:=+openssl +libevent2 +libevent2-openssl +libevent2-pthreads +libopenssl +libpthread
+  DEPENDS:=+libopenssl +libevent2 +libevent2-openssl +libevent2-pthreads +libopenssl +libpthread +musl-fts
 endef
 
 define Package/sslsplit/description
