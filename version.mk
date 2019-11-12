@@ -1,3 +1,0 @@
-PKG_NAME:=sslsplit
-PKG_VERSION:=0.4.8
-PKG_RELEASE:=1
