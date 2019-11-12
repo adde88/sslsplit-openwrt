@@ -1,29 +1,29 @@
-/*
- * SSLsplit - transparent and scalable SSL/TLS interception
- * Copyright (c) 2009-2014, Daniel Roethlisberger <daniel@roe.ch>
+/*-
+ * SSLsplit - transparent SSL/TLS interception
+ * https://www.roe.ch/SSLsplit
+ *
+ * Copyright (c) 2009-2019, Daniel Roethlisberger <daniel@roe.ch>.
  * All rights reserved.
- * http://www.roe.ch/SSLsplit
  *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice unmodified, this list of conditions, and the following
- *    disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
- * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
- * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER AND CONTRIBUTORS ``AS IS''
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "cert.h"
@@ -44,8 +44,11 @@ cert_new(void)
 	if (!(c = malloc(sizeof(cert_t))))
 		return NULL;
 	memset(c, 0, sizeof(cert_t));
+	if (pthread_mutex_init(&c->mutex, NULL)) {
+		free(c);
+		return NULL;
+	}
 	c->references = 1;
-	pthread_mutex_init(&c->mutex, NULL);
 	return c;
 }
 
@@ -60,11 +63,14 @@ cert_new3(EVP_PKEY *key, X509 *crt, STACK_OF(X509) *chain)
 
 	if (!(c = malloc(sizeof(cert_t))))
 		return NULL;
+	if (pthread_mutex_init(&c->mutex, NULL)) {
+		free(c);
+		return NULL;
+	}
 	c->key = key;
 	c->crt = crt;
 	c->chain = chain;
 	c->references = 1;
-	pthread_mutex_init(&c->mutex, NULL);
 	return c;
 }
 
@@ -79,17 +85,19 @@ cert_new3_copy(EVP_PKEY *key, X509 *crt, STACK_OF(X509) *chain)
 
 	if (!(c = malloc(sizeof(cert_t))))
 		return NULL;
+	if (pthread_mutex_init(&c->mutex, NULL)) {
+		free(c);
+		return NULL;
+	}
 	c->key = key;
 	ssl_key_refcount_inc(c->key);
 	c->crt = crt;
 	ssl_x509_refcount_inc(c->crt);
 	c->chain = sk_X509_dup(chain);
-	int i;
-	for (i = 0; i < sk_X509_num(c->chain); i++) {
+	for (int i = 0; i < sk_X509_num(c->chain); i++) {
 		ssl_x509_refcount_inc(sk_X509_value(c->chain, i));
 	}
 	c->references = 1;
-	pthread_mutex_init(&c->mutex, NULL);
 	return c;
 }
 
@@ -104,6 +112,10 @@ cert_new_load(const char *filename)
 	if (!(c = malloc(sizeof(cert_t))))
 		return NULL;
 	memset(c, 0, sizeof(cert_t));
+	if (pthread_mutex_init(&c->mutex, NULL)) {
+		free(c);
+		return NULL;
+	}
 
 	if (ssl_x509chain_load(&c->crt, &c->chain, filename) == -1) {
 		free(c);
@@ -119,7 +131,6 @@ cert_new_load(const char *filename)
 		return NULL;
 	}
 	c->references = 1;
-	pthread_mutex_init(&c->mutex, NULL);
 	return c;
 }
 
@@ -172,8 +183,7 @@ cert_set_chain(cert_t *c, STACK_OF(X509) *chain)
 	}
 	if (chain) {
 		c->chain = sk_X509_dup(chain);
-		int i;
-		for (i = 0; i < sk_X509_num(c->chain); i++) {
+		for (int i = 0; i < sk_X509_num(c->chain); i++) {
 			ssl_x509_refcount_inc(sk_X509_value(c->chain, i));
 		}
 	} else {

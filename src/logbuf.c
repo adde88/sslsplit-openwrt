@@ -1,29 +1,29 @@
-/*
- * SSLsplit - transparent and scalable SSL/TLS interception
- * Copyright (c) 2009-2014, Daniel Roethlisberger <daniel@roe.ch>
+/*-
+ * SSLsplit - transparent SSL/TLS interception
+ * https://www.roe.ch/SSLsplit
+ *
+ * Copyright (c) 2009-2019, Daniel Roethlisberger <daniel@roe.ch>.
  * All rights reserved.
- * http://www.roe.ch/SSLsplit
  *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice unmodified, this list of conditions, and the following
- *    disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
- * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
- * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER AND CONTRIBUTORS ``AS IS''
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "logbuf.h"
@@ -34,25 +34,37 @@
 #include <string.h>
 
 /*
- * Dynamic log buffer with zero-copy chaining and fd meta information.
+ * Dynamic log buffer with zero-copy chaining, generic void * file handle
+ * and ctl for status control flags.
  * Logbuf always owns the internal allocated buffer.
  */
 
 /*
  * Create new logbuf from provided, pre-allocated buffer, set fd and next.
- * The provided buffer will be freed by logbuf_free() if non-NULL.
+ * The provided buffer will be freed by logbuf_free() if non-NULL, and by
+ * logbuf_new() in case it fails returning NULL.
  */
 logbuf_t *
-logbuf_new(void *buf, size_t sz, int fd, logbuf_t *next)
+logbuf_new(void *buf, size_t sz, logbuf_t *next)
 {
 	logbuf_t *lb;
 
-	if (!(lb = malloc(sizeof(logbuf_t))))
+	if (!(lb = malloc(sizeof(logbuf_t)))) {
+		if (buf)
+			free(buf);
 		return NULL;
+	}
 	lb->buf = buf;
 	lb->sz = sz;
-	lb->fd = fd;
-	lb->next = next;
+	if (next) {
+		lb->fh = next->fh;
+		lb->ctl = next->ctl;
+		lb->next = next;
+	} else {
+		lb->fh = NULL;
+		lb->ctl = 0;
+		lb->next = NULL;
+	}
 	return lb;
 }
 
@@ -60,7 +72,7 @@ logbuf_new(void *buf, size_t sz, int fd, logbuf_t *next)
  * Create new logbuf, allocating sz bytes into the internal buffer.
  */
 logbuf_t *
-logbuf_new_alloc(size_t sz, int fd, logbuf_t *next)
+logbuf_new_alloc(size_t sz, logbuf_t *next)
 {
 	logbuf_t *lb;
 
@@ -71,8 +83,15 @@ logbuf_new_alloc(size_t sz, int fd, logbuf_t *next)
 		return NULL;
 	}
 	lb->sz = sz;
-	lb->fd = fd;
-	lb->next = next;
+	if (next) {
+		lb->fh = next->fh;
+		lb->ctl = next->ctl;
+		lb->next = next;
+	} else {
+		lb->fh = NULL;
+		lb->ctl = 0;
+		lb->next = NULL;
+	}
 	return lb;
 }
 
@@ -80,7 +99,7 @@ logbuf_new_alloc(size_t sz, int fd, logbuf_t *next)
  * Create new logbuf, copying buf into a newly allocated internal buffer.
  */
 logbuf_t *
-logbuf_new_copy(const void *buf, size_t sz, int fd, logbuf_t *next)
+logbuf_new_copy(const void *buf, size_t sz, logbuf_t *next)
 {
 	logbuf_t *lb;
 
@@ -92,16 +111,23 @@ logbuf_new_copy(const void *buf, size_t sz, int fd, logbuf_t *next)
 	}
 	memcpy(lb->buf, buf, sz);
 	lb->sz = sz;
-	lb->fd = fd;
-	lb->next = next;
+	if (next) {
+		lb->fh = next->fh;
+		lb->ctl = next->ctl;
+		lb->next = next;
+	} else {
+		lb->fh = NULL;
+		lb->ctl = 0;
+		lb->next = NULL;
+	}
 	return lb;
 }
 
 /*
- * Create new logbuf using printf, setting fd and next.
+ * Create new logbuf using printf.
  */
 logbuf_t *
-logbuf_new_printf(int fd, logbuf_t *next, const char *fmt, ...)
+logbuf_new_printf(logbuf_t *next, const char *fmt, ...)
 {
 	va_list ap;
 	logbuf_t *lb;
@@ -111,12 +137,80 @@ logbuf_new_printf(int fd, logbuf_t *next, const char *fmt, ...)
 	va_start(ap, fmt);
 	lb->sz = vasprintf((char**)&lb->buf, fmt, ap);
 	va_end(ap);
-	if (lb->sz == -1) {
+	if (lb->sz < 0) {
 		free(lb);
 		return NULL;
 	}
-	lb->fd = fd;
-	lb->next = next;
+	if (next) {
+		lb->fh = next->fh;
+		lb->ctl = next->ctl;
+		lb->next = next;
+	} else {
+		lb->fh = NULL;
+		lb->ctl = 0;
+		lb->next = NULL;
+	}
+	return lb;
+}
+
+/*
+ * Create new logbuf from lb.  If combine is set, combine all the buffer
+ * segments into a single contiguous one.  Otherwise, copy segment by segment.
+ */
+logbuf_t *
+logbuf_new_deepcopy(logbuf_t *lb, int combine)
+{
+	logbuf_t *lbnew;
+	unsigned char *p;
+
+	if (!lb)
+		return NULL;
+
+	if (combine) {
+		lbnew = logbuf_new_alloc(logbuf_size(lb), NULL);
+		if (!lbnew)
+			return NULL;
+		lbnew->fh = lb->fh;
+		lbnew->ctl = lb->ctl;
+		p = lbnew->buf;
+		while (lb) {
+			memcpy(p, lb->buf, lb->sz);
+			p += lb->sz;
+			lb = lb->next;
+		}
+	} else {
+		lbnew = logbuf_new_copy(lb->buf, lb->sz, NULL);
+		if (!lbnew)
+			return NULL;
+		lbnew->fh = lb->fh;
+		lbnew->ctl = lb->ctl;
+		lbnew->next = logbuf_new_deepcopy(lb->next, 0);
+	}
+	return lbnew;
+}
+
+logbuf_t *
+logbuf_make_contiguous(logbuf_t *lb) {
+	unsigned char *p;
+	logbuf_t *lbtmp;
+
+	if (!lb)
+		return NULL;
+	if (!lb->next)
+		return lb;
+	p = realloc(lb->buf, logbuf_size(lb));
+	if (!p)
+		return NULL;
+	lb->buf = p;
+	lbtmp = lb;
+	p += lbtmp->sz;
+	while ((lbtmp = lbtmp->next)) {
+		memcpy(p, lbtmp->buf, lbtmp->sz);
+		lb->sz += lbtmp->sz;
+		p += lbtmp->sz;
+	}
+	logbuf_free(lb->next);
+	lb->next = NULL;
 	return lb;
 }
 
@@ -144,14 +238,15 @@ ssize_t
 logbuf_write_free(logbuf_t *lb, writefunc_t writefunc)
 {
 	ssize_t rv1, rv2 = 0;
-
-	rv1 = writefunc(lb->fd, lb->buf, lb->sz);
-	free(lb->buf);
+	rv1 = writefunc(lb->fh, lb->ctl, lb->buf, lb->sz);
+	if (lb->buf) {
+		free(lb->buf);
+	}
 	if (lb->next) {
 		if (rv1 == -1) {
 			logbuf_free(lb->next);
 		} else {
-			lb->next->fd = lb->fd;
+			lb->next->fh = lb->fh;
 			rv2 = logbuf_write_free(lb->next, writefunc);
 		}
 	}
@@ -163,7 +258,7 @@ logbuf_write_free(logbuf_t *lb, writefunc_t writefunc)
 }
 
 /*
- * Free dynbuf including internal and chained buffers.
+ * Free logbuf including internal and chained buffers.
  */
 void
 logbuf_free(logbuf_t *lb)

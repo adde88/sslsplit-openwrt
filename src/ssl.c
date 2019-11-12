@@ -1,34 +1,36 @@
-/*
- * SSLsplit - transparent and scalable SSL/TLS interception
- * Copyright (c) 2009-2014, Daniel Roethlisberger <daniel@roe.ch>
+/*-
+ * SSLsplit - transparent SSL/TLS interception
+ * https://www.roe.ch/SSLsplit
+ *
+ * Copyright (c) 2009-2019, Daniel Roethlisberger <daniel@roe.ch>.
  * All rights reserved.
- * http://www.roe.ch/SSLsplit
  *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice unmodified, this list of conditions, and the following
- *    disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
- * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
- * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER AND CONTRIBUTORS ``AS IS''
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "ssl.h"
 
 #include "log.h"
+#include "defaults.h"
+#include "attrib.h"
 
 #include <sys/types.h>
 #include <fcntl.h>
@@ -38,7 +40,9 @@
 #include <limits.h>
 
 #include <openssl/crypto.h>
+#ifndef OPENSSL_NO_ENGINE
 #include <openssl/engine.h>
+#endif /* !OPENSSL_NO_ENGINE */
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
@@ -60,7 +64,8 @@
  * http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=703031
  * http://openssl.6102.n7.nabble.com/NULL-ptr-deref-when-calling-SSL-get-certificate-with-1-0-0k-td43636.html
  */
-#if (OPENSSL_VERSION_NUMBER == 0x100000bfL) || \
+#if (OPENSSL_VERSION_NUMBER == 0x0090819fL) || \
+    (OPENSSL_VERSION_NUMBER == 0x100000bfL) || \
     (OPENSSL_VERSION_NUMBER == 0x1000105fL)
 /*
  * OpenSSL internal declarations from ssl_locl.h, reduced to what is needed.
@@ -85,7 +90,36 @@ ssl_ssl_cert_get(SSL *s)
 {
 	return s->cert ? s->cert->key->x509 : NULL;
 }
-#endif /* OpenSSL 1.0.0k or 1.0.1e */
+#endif /* OpenSSL 0.9.8y, 1.0.0k or 1.0.1e */
+
+#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER)
+int
+DH_set0_pqg(DH *dh, BIGNUM *p, BIGNUM *q, BIGNUM *g)
+{
+	/*
+	 * If the fields p and g in d are NULL, the corresponding input
+	 * parameters MUST be non-NULL.  q may remain NULL.
+	 */
+	if ((dh->p == NULL && p == NULL) || (dh->g == NULL && g == NULL))
+		return 0;
+
+	if (p != NULL) {
+		BN_free(dh->p);
+		dh->p = p;
+	}
+	if (q != NULL) {
+		BN_free(dh->q);
+		dh->q = q;
+		dh->length = BN_num_bits(q);
+	}
+	if (g != NULL) {
+		BN_free(dh->g);
+		dh->g = g;
+	}
+
+	return 1;
+}
+#endif
 
 
 /*
@@ -101,10 +135,32 @@ ssl_openssl_version(void)
 	fprintf(stderr, "rtlinked against %s (%lx)\n",
 	                SSLeay_version(SSLEAY_VERSION),
 	                SSLeay());
+	if ((OPENSSL_VERSION_NUMBER ^ SSLeay()) & 0xfffff000L) {
+		fprintf(stderr, "---------------------------------------"
+		                "---------------------------------------\n");
+		fprintf(stderr, "WARNING: OpenSSL version mismatch may "
+		                "lead to crashes or other problems!\n");
+		fprintf(stderr, "If there are multiple versions of "
+		                "OpenSSL available, make sure to use\n");
+		fprintf(stderr, "the same version of the library at "
+		                "runtime as well as for compiling against.\n");
+		fprintf(stderr, "---------------------------------------"
+		                "---------------------------------------\n");
+	}
+#ifdef LIBRESSL_VERSION_NUMBER
+	fprintf(stderr, "OpenSSL API provided by LibreSSL: %s (%lx)\n",
+	                LIBRESSL_VERSION_TEXT,
+	                (long unsigned int)LIBRESSL_VERSION_NUMBER);
+#endif /* LIBRESSL_VERSION_NUMBER */
+#ifdef OPENSSL_IS_BORINGSSL
+	fprintf(stderr, "OpenSSL API provided by BoringSSL\n")
+#endif /* OPENSSL_IS_BORINGSSL */
 #ifndef OPENSSL_NO_TLSEXT
-	fprintf(stderr, "TLS Server Name Indication (SNI) supported\n");
+	fprintf(stderr, "OpenSSL has support for TLS extensions\n"
+	                "TLS Server Name Indication (SNI) supported\n");
 #else /* OPENSSL_NO_TLSEXT */
-	fprintf(stderr, "TLS Server Name Indication (SNI) not supported\n");
+	fprintf(stderr, "OpenSSL has no support for TLS extensions\n"
+	                "TLS Server Name Indication (SNI) not supported\n");
 #endif /* OPENSSL_NO_TLSEXT */
 #ifdef OPENSSL_THREADS
 #ifndef OPENSSL_NO_THREADID
@@ -115,47 +171,61 @@ ssl_openssl_version(void)
 #else /* !OPENSSL_THREADS */
 	fprintf(stderr, "OpenSSL is not thread-safe\n");
 #endif /* !OPENSSL_THREADS */
+#ifndef OPENSSL_NO_ENGINE
+	fprintf(stderr, "OpenSSL has engine support\n");
+#else /* OPENSSL_NO_ENGINE */
+	fprintf(stderr, "OpenSSL has no engine support\n");
+#endif /* OPENSSL_NO_ENGINE */
 #ifdef SSL_MODE_RELEASE_BUFFERS
 	fprintf(stderr, "Using SSL_MODE_RELEASE_BUFFERS\n");
 #else /* !SSL_MODE_RELEASE_BUFFERS */
 	fprintf(stderr, "Not using SSL_MODE_RELEASE_BUFFERS\n");
 #endif /* !SSL_MODE_RELEASE_BUFFERS */
-#if (OPENSSL_VERSION_NUMBER == 0x100000bfL) || \
+#if (OPENSSL_VERSION_NUMBER == 0x0090819fL) || \
+    (OPENSSL_VERSION_NUMBER == 0x100000bfL) || \
     (OPENSSL_VERSION_NUMBER == 0x1000105fL)
 	fprintf(stderr, "Using direct access workaround when loading certs\n");
-#endif /* OpenSSL 1.0.0k or 1.0.1e */
+#endif /* OpenSSL 0.9.8y, 1.0.0k or 1.0.1e */
+
+	fprintf(stderr, "SSL/TLS protocol availability: %s\n",
+	                SSL_PROTO_SUPPORT_S);
 
 	fprintf(stderr, "SSL/TLS algorithm availability:");
+#ifndef OPENSSL_NO_SHA0
+	fprintf(stderr, " SHA0");
+#else /* !OPENSSL_NO_SHA0 */
+	fprintf(stderr, " !SHA0");
+#endif /* !OPENSSL_NO_SHA0 */
 #ifndef OPENSSL_NO_RSA
 	fprintf(stderr, " RSA");
-#else /* OPENSSL_NO_RSA */
+#else /* !OPENSSL_NO_RSA */
 	fprintf(stderr, " !RSA");
-#endif /* OPENSSL_NO_RSA */
+#endif /* !OPENSSL_NO_RSA */
 #ifndef OPENSSL_NO_DSA
 	fprintf(stderr, " DSA");
-#else /* OPENSSL_NO_DSA */
+#else /* !OPENSSL_NO_DSA */
 	fprintf(stderr, " !DSA");
-#endif /* OPENSSL_NO_DSA */
+#endif /* !OPENSSL_NO_DSA */
 #ifndef OPENSSL_NO_ECDSA
 	fprintf(stderr, " ECDSA");
-#else /* OPENSSL_NO_ECDSA */
+#else /* !OPENSSL_NO_ECDSA */
 	fprintf(stderr, " !ECDSA");
-#endif /* OPENSSL_NO_ECDSA */
+#endif /* !OPENSSL_NO_ECDSA */
 #ifndef OPENSSL_NO_DH
 	fprintf(stderr, " DH");
-#else /* OPENSSL_NO_DH */
+#else /* !OPENSSL_NO_DH */
 	fprintf(stderr, " !DH");
-#endif /* OPENSSL_NO_DH */
+#endif /* !OPENSSL_NO_DH */
 #ifndef OPENSSL_NO_ECDH
 	fprintf(stderr, " ECDH");
-#else /* OPENSSL_NO_ECDH */
+#else /* !OPENSSL_NO_ECDH */
 	fprintf(stderr, " !ECDH");
-#endif /* OPENSSL_NO_ECDH */
+#endif /* !OPENSSL_NO_ECDH */
 #ifndef OPENSSL_NO_EC
 	fprintf(stderr, " EC");
-#else /* OPENSSL_NO_EC */
+#else /* !OPENSSL_NO_EC */
 	fprintf(stderr, " !EC");
-#endif /* OPENSSL_NO_EC */
+#endif /* !OPENSSL_NO_EC */
 	fprintf(stderr, "\n");
 
 	fprintf(stderr, "OpenSSL option availability:");
@@ -199,7 +269,7 @@ ssl_openssl_version(void)
  */
 static int ssl_initialized = 0;
 
-#ifdef OPENSSL_THREADS
+#if defined(OPENSSL_THREADS) && ((OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER))
 struct CRYPTO_dynlock_value {
 	pthread_mutex_t mutex;
 };
@@ -229,7 +299,10 @@ ssl_thr_dyn_create_cb(UNUSED const char *file, UNUSED int line)
 	struct CRYPTO_dynlock_value *dl;
 
 	if ((dl = malloc(sizeof(struct CRYPTO_dynlock_value)))) {
-		pthread_mutex_init(&dl->mutex, NULL);
+		if (pthread_mutex_init(&dl->mutex, NULL)) {
+			free(dl);
+			return NULL;
+		}
 	}
 	return dl;
 }
@@ -295,21 +368,36 @@ ssl_init(void)
 		return 0;
 
 	/* general initialization */
+#if (OPENSSL_VERSION_NUMBER >= 0x10100000L) && !defined(LIBRESSL_VERSION_NUMBER)
+	OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG
+#ifndef OPENSSL_NO_ENGINE
+	                    |OPENSSL_INIT_ENGINE_ALL_BUILTIN
+#endif /* !OPENSSL_NO_ENGINE */
+	                    , NULL);
+	OPENSSL_init_ssl(0, NULL);
+#else /* OPENSSL_VERSION_NUMBER < 0x10100000L */
 	SSL_library_init();
+#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
+
 #ifdef PURIFY
 	CRYPTO_malloc_init();
 	CRYPTO_mem_ctrl(CRYPTO_MEM_CHECK_ON);
 #endif /* PURIFY */
 	SSL_load_error_strings();
 	OpenSSL_add_all_algorithms();
+#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER)
+	OPENSSL_config(NULL);
+#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
 
 	/* thread-safety */
-#ifdef OPENSSL_THREADS
+#if defined(OPENSSL_THREADS) && ((OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER))
 	ssl_mutex_num = CRYPTO_num_locks();
 	ssl_mutex = malloc(ssl_mutex_num * sizeof(*ssl_mutex));
-	int i;
-	for (i = 0; i < ssl_mutex_num; i++) {
-		pthread_mutex_init(&ssl_mutex[i], NULL);
+	for (int i = 0; i < ssl_mutex_num; i++) {
+		if (pthread_mutex_init(&ssl_mutex[i], NULL)) {
+			log_err_printf("Failed to initialize mutex\n");
+			return -1;
+		}
 	}
 	CRYPTO_set_locking_callback(ssl_thr_locking_cb);
 	CRYPTO_set_dynlock_create_callback(ssl_thr_dyn_create_cb);
@@ -320,7 +408,7 @@ ssl_init(void)
 #else /* !OPENSSL_NO_THREADID */
 	CRYPTO_THREADID_set_callback(ssl_thr_id_cb);
 #endif /* !OPENSSL_NO_THREADID */
-#endif /* OPENSSL_THREADS */
+#endif /* OPENSSL_THREADS && OPENSSL_VERSION_NUMBER < 0x10100000L */
 
 	/* randomness */
 #ifndef PURIFY
@@ -363,20 +451,23 @@ ssl_init(void)
 }
 
 /*
- * Re-initialize OpenSSL after forking.
+ * Re-initialize OpenSSL after forking.  Returns 0 on success, -1 on failure.
  */
-void
+int
 ssl_reinit(void)
 {
 	if (!ssl_initialized)
-		return;
+		return 0;
 
-#ifdef OPENSSL_THREADS
-	int i;
-	for (i = 0; i < ssl_mutex_num; i++) {
-		pthread_mutex_init(&ssl_mutex[i], NULL);
+#if defined(OPENSSL_THREADS) && ((OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER))
+	for (int i = 0; i < ssl_mutex_num; i++) {
+		if (pthread_mutex_init(&ssl_mutex[i], NULL)) {
+			return -1;
+		}
 	}
 #endif /* OPENSSL_THREADS */
+
+	return 0;
 }
 
 /*
@@ -389,9 +480,12 @@ ssl_fini(void)
 	if (!ssl_initialized)
 		return;
 
+#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER)
 	ERR_remove_state(0); /* current thread */
+#endif
 
-#ifdef OPENSSL_THREADS
+#if defined(OPENSSL_THREADS) && \
+    ((OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER))
 	CRYPTO_set_locking_callback(NULL);
 	CRYPTO_set_dynlock_create_callback(NULL);
 	CRYPTO_set_dynlock_lock_callback(NULL);
@@ -401,14 +495,16 @@ ssl_fini(void)
 #else /* !OPENSSL_NO_THREADID */
 	CRYPTO_THREADID_set_callback(NULL);
 #endif /* !OPENSSL_NO_THREADID */
-	int i;
-	for (i = 0; i < ssl_mutex_num; i++) {
+	for (int i = 0; i < ssl_mutex_num; i++) {
 		pthread_mutex_destroy(&ssl_mutex[i]);
 	}
 	free(ssl_mutex);
 #endif
 
+#if !defined(OPENSSL_NO_ENGINE) && \
+    ((OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER))
 	ENGINE_cleanup();
+#endif /* !OPENSSL_NO_ENGINE && OPENSSL_VERSION_NUMBER < 0x10100000L */
 	CONF_modules_finish();
 	CONF_modules_unload(1);
 	CONF_modules_free();
@@ -416,24 +512,128 @@ ssl_fini(void)
 	EVP_cleanup();
 	ERR_free_strings();
 	CRYPTO_cleanup_all_ex_data();
+
+	ssl_initialized = 0;
 }
 
+/*
+ * Look up an OpenSSL engine by ID or by full path and load it as default
+ * engine.  This works globally, not on specific SSL_CTX or SSL instances.
+ * OpenSSL must already have been initialized when calling this function.
+ * Returns 0 on success, -1 on failure.
+ */
+#ifndef OPENSSL_NO_ENGINE
+int
+ssl_engine(const char *name) {
+	ENGINE *engine;
+
+	engine = ENGINE_by_id(name);
+	if (!engine)
+		return -1;
+
+	if (!ENGINE_set_default(engine, ENGINE_METHOD_ALL))
+		return -1;
+	return 0;
+}
+#endif /* !OPENSSL_NO_ENGINE */
+
+/*
+ * Format raw SHA1 hash into newly allocated string, with or without colons.
+ */
+char *
+ssl_sha1_to_str(unsigned char *rawhash, int colons)
+{
+	char *str;
+	int rv;
+
+	rv = asprintf(&str, colons ?
+	              "%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X:"
+	              "%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X" :
+	              "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X"
+	              "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X",
+	              rawhash[ 0], rawhash[ 1], rawhash[ 2], rawhash[ 3],
+	              rawhash[ 4], rawhash[ 5], rawhash[ 6], rawhash[ 7],
+	              rawhash[ 8], rawhash[ 9], rawhash[10], rawhash[11],
+	              rawhash[12], rawhash[13], rawhash[14], rawhash[15],
+	              rawhash[16], rawhash[17], rawhash[18], rawhash[19]);
+	if (rv == -1)
+		return NULL;
+	return str;
+}
+
+/*
+ * Format SSL state into newly allocated string.
+ * Returns pointer to string that must be freed by caller, or NULL on error.
+ */
 char *
 ssl_ssl_state_to_str(SSL *ssl)
 {
-	char *str;
+	char *str = NULL;
+	int rv;
 
-	asprintf(&str, "%08x = %s%s%s%04x = %s (%s) [%s]",
-	         ssl->state,
-	         (ssl->state & SSL_ST_CONNECT) ? "SSL_ST_CONNECT|" : "",
-	         (ssl->state & SSL_ST_ACCEPT) ? "SSL_ST_ACCEPT|" : "",
-	         (ssl->state & SSL_ST_BEFORE) ? "SSL_ST_BEFORE|" : "",
-	         ssl->state & SSL_ST_MASK,
-	         SSL_state_string(ssl),
-	         SSL_state_string_long(ssl),
-	         (ssl->type == SSL_ST_CONNECT) ? "connect socket"
-	                                       : "accept socket");
-	return str;
+	rv = asprintf(&str, "%08x = %s%s%04x = %s (%s) [%s]",
+	              SSL_get_state(ssl),
+	              (SSL_get_state(ssl) & SSL_ST_CONNECT) ? "SSL_ST_CONNECT|" : "",
+	              (SSL_get_state(ssl) & SSL_ST_ACCEPT) ? "SSL_ST_ACCEPT|" : "",
+	              SSL_get_state(ssl) & SSL_ST_MASK,
+	              SSL_state_string(ssl),
+	              SSL_state_string_long(ssl),
+	              SSL_is_server(ssl) ? "accept socket" : "connect socket");
+
+	return (rv < 0) ? NULL : str;
+}
+
+/*
+ * Generates a NSS key log format compatible string containing the client
+ * random and the master key, intended to be used to decrypt externally
+ * captured network traffic using tools like Wireshark.
+ *
+ * Only supports the CLIENT_RANDOM method (SSL 3.0 - TLS 1.2).
+ *
+ * https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/Key_Log_Format
+ */
+char *
+ssl_ssl_masterkey_to_str(SSL *ssl)
+{
+	char *str = NULL;
+	int rv;
+	unsigned char *k, *r;
+#if (OPENSSL_VERSION_NUMBER >= 0x10100000L) && !defined(LIBRESSL_VERSION_NUMBER)
+	unsigned char kbuf[48], rbuf[32];
+	k = &kbuf[0];
+	r = &rbuf[0];
+	SSL_SESSION_get_master_key(SSL_get0_session(ssl), k, sizeof(kbuf));
+	SSL_get_client_random(ssl, r, sizeof(rbuf));
+#else /* OPENSSL_VERSION_NUMBER < 0x10100000L */
+	k = ssl->session->master_key;
+	r = ssl->s3->client_random;
+#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
+	rv = asprintf(&str,
+	              "CLIENT_RANDOM "
+	              "%02X%02X%02X%02X%02X%02X%02X%02X"
+	              "%02X%02X%02X%02X%02X%02X%02X%02X"
+	              "%02X%02X%02X%02X%02X%02X%02X%02X"
+	              "%02X%02X%02X%02X%02X%02X%02X%02X"
+	              " "
+	              "%02X%02X%02X%02X%02X%02X%02X%02X"
+	              "%02X%02X%02X%02X%02X%02X%02X%02X"
+	              "%02X%02X%02X%02X%02X%02X%02X%02X"
+	              "%02X%02X%02X%02X%02X%02X%02X%02X"
+	              "%02X%02X%02X%02X%02X%02X%02X%02X"
+	              "%02X%02X%02X%02X%02X%02X%02X%02X"
+	              "\n",
+	              r[ 0], r[ 1], r[ 2], r[ 3], r[ 4], r[ 5], r[ 6], r[ 7],
+	              r[ 8], r[ 9], r[10], r[11], r[12], r[13], r[14], r[15],
+	              r[16], r[17], r[18], r[19], r[20], r[21], r[22], r[23],
+	              r[24], r[25], r[26], r[27], r[28], r[29], r[30], r[31],
+	              k[ 0], k[ 1], k[ 2], k[ 3], k[ 4], k[ 5], k[ 6], k[ 7],
+	              k[ 8], k[ 9], k[10], k[11], k[12], k[13], k[14], k[15],
+	              k[16], k[17], k[18], k[19], k[20], k[21], k[22], k[23],
+	              k[24], k[25], k[26], k[27], k[28], k[29], k[30], k[31],
+	              k[32], k[33], k[34], k[35], k[36], k[37], k[38], k[39],
+	              k[40], k[41], k[42], k[43], k[44], k[45], k[46], k[47]);
+
+	return (rv < 0) ? NULL : str;
 }
 
 #ifndef OPENSSL_NO_DH
@@ -533,38 +733,49 @@ DH *
 ssl_tmp_dh_callback(UNUSED SSL *s, int is_export, int keylength)
 {
 	DH *dh;
+	int rv = 0;
 
 	if (!(dh = DH_new())) {
 		log_err_printf("DH_new() failed\n");
 		return NULL;
 	}
 	switch (keylength) {
-		case 512:
-			dh->p = BN_bin2bn(dh512_p, sizeof(dh512_p), NULL);
-			break;
-		case 1024:
-			dh->p = BN_bin2bn(dh1024_p, sizeof(dh1024_p), NULL);
-			break;
-		case 2048:
-			dh->p = BN_bin2bn(dh2048_p, sizeof(dh2048_p), NULL);
-			break;
-		case 4096:
-			dh->p = BN_bin2bn(dh4096_p, sizeof(dh4096_p), NULL);
-			break;
-		default:
-			log_err_printf("Unhandled DH keylength %i%s\n",
-			               keylength,
-			               (is_export ? " (export)" : ""));
-			DH_free(dh);
-			return NULL;
+	case 512:
+		rv = DH_set0_pqg(dh,
+		                 BN_bin2bn(dh512_p, sizeof(dh512_p), NULL),
+		                 NULL,
+		                 BN_bin2bn(dh_g, sizeof(dh_g), NULL));
+		break;
+	case 1024:
+		rv = DH_set0_pqg(dh,
+		                 BN_bin2bn(dh1024_p, sizeof(dh1024_p), NULL),
+		                 NULL,
+		                 BN_bin2bn(dh_g, sizeof(dh_g), NULL));
+		break;
+	case 2048:
+		rv = DH_set0_pqg(dh,
+		                 BN_bin2bn(dh2048_p, sizeof(dh2048_p), NULL),
+		                 NULL,
+		                 BN_bin2bn(dh_g, sizeof(dh_g), NULL));
+		break;
+	case 4096:
+		rv = DH_set0_pqg(dh,
+		                 BN_bin2bn(dh4096_p, sizeof(dh4096_p), NULL),
+		                 NULL,
+		                 BN_bin2bn(dh_g, sizeof(dh_g), NULL));
+		break;
+	default:
+		log_err_printf("Unhandled DH keylength %i%s\n",
+		               keylength,
+		               (is_export ? " (export)" : ""));
+		DH_free(dh);
+		return NULL;
 	}
-	dh->g = BN_bin2bn(dh_g, sizeof(dh_g), NULL);
-	if (!dh->p || !dh->g) {
+	if (!rv) {
 		log_err_printf("Failed to load DH p and g from memory\n");
 		DH_free(dh);
 		return NULL;
 	}
-
 	return(dh);
 }
 
@@ -601,7 +812,7 @@ ssl_ec_by_name(const char *curvename)
 	int nid;
 
 	if (!curvename)
-		curvename = SSL_EC_KEY_CURVE_DEFAULT;
+		curvename = DFLT_CURVE;
 
 	if ((nid = OBJ_sn2nid(curvename)) == NID_undef) {
 		return NULL;
@@ -663,13 +874,15 @@ ssl_rand(void *p, size_t sz)
 {
 	int rv;
 
+#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER)
 	rv = RAND_pseudo_bytes((unsigned char*)p, sz);
-	if (rv == -1) {
-		rv = RAND_bytes((unsigned char*)p, sz);
-		if (rv != 1)
-			return -1;
-	}
-	return 0;
+	if (rv == 1)
+		return 0;
+#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
+	rv = RAND_bytes((unsigned char*)p, sz);
+	if (rv == 1)
+		return 0;
+	return -1;
 }
 
 /*
@@ -713,6 +926,36 @@ ssl_x509_serial_copyrand(X509 *dstcrt, X509 *srccrt)
 }
 
 /*
+ * Returns the appropriate key usage strings for the type of server key.
+ * Return value should conceptually be const, but OpenSSL does not use const
+ * appropriately.
+ */
+static char *
+ssl_key_usage_for_key(EVP_PKEY *key)
+{
+	switch (EVP_PKEY_type(EVP_PKEY_base_id(key))) {
+#ifndef OPENSSL_NO_RSA
+	case EVP_PKEY_RSA:
+		return "keyEncipherment,digitalSignature";
+#endif /* !OPENSSL_NO_RSA */
+#ifndef OPENSSL_NO_DH
+	case EVP_PKEY_DH:
+		return "keyAgreement";
+#endif /* !OPENSSL_NO_DH */
+#ifndef OPENSSL_NO_DSA
+	case EVP_PKEY_DSA:
+		return "digitalSignature";
+#endif /* !OPENSSL_NO_DSA */
+#ifndef OPENSSL_NO_ECDSA
+	case EVP_PKEY_EC:
+		return "digitalSignature,keyAgreement";
+#endif /* !OPENSSL_NO_ECDSA */
+	default:
+		return "keyEncipherment,keyAgreement,digitalSignature";
+	}
+}
+
+/*
  * Create a fake X509v3 certificate, signed by the provided CA,
  * based on the original certificate retrieved from the real server.
  * The returned certificate is created using X509_new() and thus must
@@ -720,13 +963,14 @@ ssl_x509_serial_copyrand(X509 *dstcrt, X509 *srccrt)
  * The optional argument extraname is added to subjectAltNames if provided.
  */
 X509 *
-ssl_x509_forge(X509 *cacrt, EVP_PKEY *cakey, X509 *origcrt,
-               const char *extraname, EVP_PKEY *key)
+ssl_x509_forge(X509 *cacrt, EVP_PKEY *cakey, X509 *origcrt, EVP_PKEY *key,
+               const char *extraname, const char *crlurl)
 {
 	X509_NAME *subject, *issuer;
 	GENERAL_NAMES *names;
 	GENERAL_NAME *gn;
 	X509 *crt;
+	int rv;
 
 	subject = X509_get_subject_name(origcrt);
 	issuer = X509_get_subject_name(cacrt);
@@ -747,20 +991,48 @@ ssl_x509_forge(X509 *cacrt, EVP_PKEY *cakey, X509 *origcrt,
 		goto errout;
 
 	/* add standard v3 extensions; cf. RFC 2459 */
+
 	X509V3_CTX ctx;
 	X509V3_set_ctx(&ctx, cacrt, crt, NULL, NULL, 0);
-	if (ssl_x509_v3ext_add(&ctx, crt, "basicConstraints",
-	                                  "CA:FALSE") == -1 ||
-	    ssl_x509_v3ext_add(&ctx, crt, "keyUsage",
-	                                  "digitalSignature,"
-	                                  "keyEncipherment") == -1 ||
-	    ssl_x509_v3ext_add(&ctx, crt, "extendedKeyUsage",
-	                                  "serverAuth") == -1 ||
-	    ssl_x509_v3ext_add(&ctx, crt, "subjectKeyIdentifier",
+	if (ssl_x509_v3ext_add(&ctx, crt, "subjectKeyIdentifier",
 	                                  "hash") == -1 ||
 	    ssl_x509_v3ext_add(&ctx, crt, "authorityKeyIdentifier",
 	                                  "keyid,issuer:always") == -1)
 		goto errout;
+
+	rv = ssl_x509_v3ext_copy_by_nid(crt, origcrt,
+	                                NID_basic_constraints);
+	if (rv == 0)
+		rv = ssl_x509_v3ext_add(&ctx, crt, "basicConstraints",
+		                                   "CA:FALSE");
+	if (rv == -1)
+		goto errout;
+
+	/* key usage depends on the key type, do not copy from original */
+	rv = ssl_x509_v3ext_add(&ctx, crt, "keyUsage",
+	                        ssl_key_usage_for_key(key));
+	if (rv == -1)
+		goto errout;
+
+	rv = ssl_x509_v3ext_copy_by_nid(crt, origcrt,
+	                                NID_ext_key_usage);
+	if (rv == 0)
+		rv = ssl_x509_v3ext_add(&ctx, crt, "extendedKeyUsage",
+		                                   "serverAuth");
+	if (rv == -1)
+		goto errout;
+
+	if (crlurl) {
+		char *crlurlval;
+		if (asprintf(&crlurlval, "URI:%s", crlurl) < 0)
+			goto errout;
+		if (ssl_x509_v3ext_add(&ctx, crt, "crlDistributionPoints",
+		                       crlurlval) == -1) {
+			free(crlurlval);
+			goto errout;
+		}
+		free(crlurlval);
+	}
 
 	if (!extraname) {
 		/* no extraname provided: copy original subjectAltName ext */
@@ -772,7 +1044,7 @@ ssl_x509_forge(X509 *cacrt, EVP_PKEY *cakey, X509 *origcrt,
 		if (!names) {
 			/* no subjectAltName present: add new one */
 			char *cfval;
-			if (asprintf(&cfval, "DNS:%s", extraname) == -1)
+			if (asprintf(&cfval, "DNS:%s", extraname) < 0)
 				goto errout;
 			if (ssl_x509_v3ext_add(&ctx, crt, "subjectAltName",
 			                       cfval) == -1) {
@@ -787,7 +1059,7 @@ ssl_x509_forge(X509 *cacrt, EVP_PKEY *cakey, X509 *origcrt,
 			if (!gn)
 				goto errout2;
 			gn->type = GEN_DNS;
-			gn->d.dNSName = M_ASN1_IA5STRING_new();
+			gn->d.dNSName = ASN1_IA5STRING_new();
 			if (!gn->d.dNSName)
 				goto errout3;
 			ASN1_STRING_set(gn->d.dNSName,
@@ -807,28 +1079,96 @@ ssl_x509_forge(X509 *cacrt, EVP_PKEY *cakey, X509 *origcrt,
 		}
 	}
 #ifdef DEBUG_CERTIFICATE
-	ssl_x509_v3ext_add(&ctx, crt, "nsComment", "Generated by " PNAME);
+	ssl_x509_v3ext_add(&ctx, crt, "nsComment", "Generated by " PKGLABEL);
 #endif /* DEBUG_CERTIFICATE */
 
 	const EVP_MD *md;
-	switch (EVP_PKEY_type(cakey->type)) {
+	switch (EVP_PKEY_type(EVP_PKEY_base_id(cakey))) {
 #ifndef OPENSSL_NO_RSA
-		case EVP_PKEY_RSA:
+	case EVP_PKEY_RSA:
+		switch (X509_get_signature_nid(origcrt)) {
+		case NID_md5WithRSAEncryption:
+			md = EVP_md5();
+			break;
+		case NID_ripemd160WithRSA:
+			md = EVP_ripemd160();
+			break;
+		case NID_sha1WithRSAEncryption:
 			md = EVP_sha1();
 			break;
+		case NID_sha224WithRSAEncryption:
+			md = EVP_sha224();
+			break;
+		case NID_sha256WithRSAEncryption:
+			md = EVP_sha256();
+			break;
+		case NID_sha384WithRSAEncryption:
+			md = EVP_sha384();
+			break;
+		case NID_sha512WithRSAEncryption:
+			md = EVP_sha512();
+			break;
+#ifndef OPENSSL_NO_SHA0
+		case NID_shaWithRSAEncryption:
+			md = EVP_sha();
+			break;
+#endif /* !OPENSSL_NO_SHA0 */
+		default:
+			md = EVP_sha256();
+			break;
+		}
+		break;
 #endif /* !OPENSSL_NO_RSA */
 #ifndef OPENSSL_NO_DSA
-		case EVP_PKEY_DSA:
-			md = EVP_dss1();
+	case EVP_PKEY_DSA:
+		switch (X509_get_signature_nid(origcrt)) {
+		case NID_dsaWithSHA1:
+		case NID_dsaWithSHA1_2:
+			md = EVP_sha1();
 			break;
+		case NID_dsa_with_SHA224:
+			md = EVP_sha224();
+			break;
+		case NID_dsa_with_SHA256:
+			md = EVP_sha256();
+			break;
+#ifndef OPENSSL_NO_SHA0
+		case NID_dsaWithSHA:
+			md = EVP_sha();
+			break;
+#endif /* !OPENSSL_NO_SHA0 */
+		default:
+			md = EVP_sha256();
+			break;
+		}
+		break;
 #endif /* !OPENSSL_NO_DSA */
 #ifndef OPENSSL_NO_ECDSA
-		case EVP_PKEY_EC:
-			md = EVP_ecdsa();
+	case EVP_PKEY_EC:
+		switch (X509_get_signature_nid(origcrt)) {
+		case NID_ecdsa_with_SHA1:
+			md = EVP_sha1();
 			break;
-#endif /* !OPENSSL_NO_ECDSA */
+		case NID_ecdsa_with_SHA224:
+			md = EVP_sha224();
+			break;
+		case NID_ecdsa_with_SHA256:
+			md = EVP_sha256();
+			break;
+		case NID_ecdsa_with_SHA384:
+			md = EVP_sha384();
+			break;
+		case NID_ecdsa_with_SHA512:
+			md = EVP_sha512();
+			break;
 		default:
-			goto errout;
+			md = EVP_sha256();
+			break;
+		}
+		break;
+#endif /* !OPENSSL_NO_ECDSA */
+	default:
+		goto errout;
 	}
 	if (!X509_sign(crt, cakey, md))
 		goto errout;
@@ -853,11 +1193,9 @@ errout:
  * Returns -1 on error.
  * Not thread-safe.
  *
- * By accessing (SSLCTX*)->extra_certs directly, we depend on OpenSSL
- * internals in this function.
- *
- * XXX try to reimplement this with exposed BIO/ASN.1 functionality
- *     in order to get rid of the ->extra_certs direct access.
+ * By accessing (SSLCTX*)->extra_certs directly on OpenSSL before 1.0.2, we
+ * depend on OpenSSL internals in this function.  OpenSSL 1.0.2 introduced
+ * the SSL_get0_chain_certs() API for accessing the certificate chain.
  */
 int
 ssl_x509chain_load(X509 **crt, STACK_OF(X509) **chain, const char *filename)
@@ -865,6 +1203,7 @@ ssl_x509chain_load(X509 **crt, STACK_OF(X509) **chain, const char *filename)
 	X509 *tmpcrt;
 	SSL_CTX *tmpctx;
 	SSL *tmpssl;
+	STACK_OF(X509) *tmpchain;
 	int rv;
 
 	if (ssl_init() == -1)
@@ -878,7 +1217,7 @@ ssl_x509chain_load(X509 **crt, STACK_OF(X509) **chain, const char *filename)
 	if (rv != 1)
 		goto leave2;
 	tmpssl = SSL_new(tmpctx);
-	if (rv != 1 || !tmpssl)
+	if (!tmpssl)
 		goto leave2;
 
 	tmpcrt = SSL_get_certificate(tmpssl);
@@ -891,6 +1230,14 @@ ssl_x509chain_load(X509 **crt, STACK_OF(X509) **chain, const char *filename)
 			goto leave3;
 	}
 
+#if (OPENSSL_VERSION_NUMBER < 0x1000200fL) || (defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x20902000L)
+	tmpchain = tmpctx->extra_certs;
+#else /* OpenSSL >= 1.0.2 || LIBRESSL_VERSION_NUMBER >= 0x20902000L */
+	rv = SSL_CTX_get0_chain_certs(tmpctx, &tmpchain);
+	if (rv != 1)
+		goto leave3;
+#endif /* OpenSSL >= 1.0.2 */
+
 	if (crt) {
 		*crt = tmpcrt;
 	} else {
@@ -898,9 +1245,8 @@ ssl_x509chain_load(X509 **crt, STACK_OF(X509) **chain, const char *filename)
 	}
 	ssl_x509_refcount_inc(tmpcrt);
 
-	int i;
-	for (i = 0; i < sk_X509_num(tmpctx->extra_certs); i++) {
-		tmpcrt = sk_X509_value(tmpctx->extra_certs, i);
+	for (int i = 0; i < sk_X509_num(tmpchain); i++) {
+		tmpcrt = sk_X509_value(tmpchain, i);
 		ssl_x509_refcount_inc(tmpcrt);
 		sk_X509_push(*chain, tmpcrt);
 	}
@@ -921,20 +1267,21 @@ leave1:
  * Copies the certificate stack to the SSL_CTX internal data structures
  * and increases reference counts accordingly.
  */
-void
+int
 ssl_x509chain_use(SSL_CTX *sslctx, X509 *crt, STACK_OF(X509) *chain)
 {
-	SSL_CTX_use_certificate(sslctx, crt);
+	if (SSL_CTX_use_certificate(sslctx, crt) != 1)
+		return -1;
 
-	int i;
-	for (i = 0; i < sk_X509_num(chain); i++) {
+	for (int i = 0; i < sk_X509_num(chain); i++) {
 		X509 *tmpcrt;
 
 		tmpcrt = sk_X509_value(chain, i);
 		ssl_x509_refcount_inc(tmpcrt);
-		sk_X509_push(sslctx->extra_certs, tmpcrt);
-		SSL_CTX_add_extra_chain_cert(sslctx, tmpcrt);
+		if (SSL_CTX_add_extra_chain_cert(sslctx, tmpcrt) != 1)
+			return -1;
 	}
+	return 0;
 }
 
 /*
@@ -957,10 +1304,11 @@ ssl_x509_load(const char *filename)
 	if (!tmpctx)
 		goto leave1;
 	rv = SSL_CTX_use_certificate_file(tmpctx, filename, SSL_FILETYPE_PEM);
-	tmpssl = SSL_new(tmpctx);
-	if (rv != 1 || !tmpssl)
+	if (rv != 1)
 		goto leave2;
-
+	tmpssl = SSL_new(tmpctx);
+	if (!tmpssl)
+		goto leave2;
 	crt = SSL_get_certificate(tmpssl);
 	if (crt)
 		ssl_x509_refcount_inc(crt);
@@ -991,8 +1339,10 @@ ssl_key_load(const char *filename)
 	if (!tmpctx)
 		goto leave1;
 	rv = SSL_CTX_use_PrivateKey_file(tmpctx, filename, SSL_FILETYPE_PEM);
+	if (rv != 1)
+		goto leave2;
 	tmpssl = SSL_new(tmpctx);
-	if (rv != 1 || !tmpssl)
+	if (!tmpssl)
 		goto leave2;
 	key = SSL_get_privatekey(tmpssl);
 	if (key)
@@ -1011,15 +1361,71 @@ leave1:
 EVP_PKEY *
 ssl_key_genrsa(const int keysize)
 {
-	EVP_PKEY * pkey;
-	RSA * rsa;
+	EVP_PKEY *pkey;
+	RSA *rsa;
 
+#if (OPENSSL_VERSION_NUMBER >= 0x10100000L) && !defined(LIBRESSL_VERSION_NUMBER)
+	BIGNUM *bn;
+	int rv;
+	rsa = RSA_new();
+	bn = BN_new();
+	BN_dec2bn(&bn, "3");
+	rv = RSA_generate_key_ex(rsa, keysize, bn, NULL);
+	BN_free(bn);
+	if (rv != 1) {
+		RSA_free(rsa);
+		return NULL;
+	}
+#else /* OPENSSL_VERSION_NUMBER < 0x10100000L */
 	rsa = RSA_generate_key(keysize, 3, NULL, NULL);
 	if (!rsa)
 		return NULL;
+#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
 	pkey = EVP_PKEY_new();
 	EVP_PKEY_assign_RSA(pkey, rsa); /* does not increment refcount */
 	return pkey;
+}
+
+/*
+ * Returns the subjectKeyIdentifier compatible key id of the public key.
+ * keyid will receive a binary SHA-1 hash of SSL_KEY_IDSZ bytes.
+ * Returns 0 on success, -1 on failure.
+ */
+int
+ssl_key_identifier_sha1(EVP_PKEY *key, unsigned char *keyid)
+{
+	X509_PUBKEY *pubkey = NULL;
+	const unsigned char *pk;
+	int length;
+
+	/* X509_PUBKEY_set() will attempt to free pubkey if != NULL */
+	if (X509_PUBKEY_set(&pubkey, key) != 1 || !pubkey)
+		return -1;
+	if (!X509_PUBKEY_get0_param(NULL, &pk, &length, NULL, pubkey))
+		goto errout;
+	if (!EVP_Digest(pk, length, keyid, NULL, EVP_sha1(), NULL))
+		goto errout;
+	X509_PUBKEY_free(pubkey);
+	return 0;
+
+errout:
+	X509_PUBKEY_free(pubkey);
+	return -1;
+}
+
+/*
+ * Returns the result of ssl_key_identifier_sha1() as hex characters with or
+ * without colons in a newly allocated string.
+ */
+char *
+ssl_key_identifier(EVP_PKEY *key, int colons)
+{
+	unsigned char id[SSL_KEY_IDSZ];
+
+	if (ssl_key_identifier_sha1(key, id) == -1)
+		return NULL;
+
+	return ssl_sha1_to_str(id, colons);
 }
 
 /*
@@ -1038,18 +1444,23 @@ ssl_x509_subject(X509 *crt)
  * Returns NULL on errors.
  */
 char *
-ssl_x509_subject_cn(X509 *crt, size_t *sz)
+ssl_x509_subject_cn(X509 *crt, size_t *psz)
 {
 	X509_NAME *ptr;
 	char *cn;
+	size_t sz;
 
 	ptr = X509_get_subject_name(crt); /* does not inc refcounts */
 	if (!ptr)
 		return NULL;
-	*sz = X509_NAME_get_text_by_NID(ptr, NID_commonName, NULL, 0) + 1;
-	if ((sz == 0) || !(cn = malloc(*sz)))
+	sz = X509_NAME_get_text_by_NID(ptr, NID_commonName, NULL, 0) + 1;
+	if ((sz == 0) || !(cn = malloc(sz)))
 		return NULL;
-	X509_NAME_get_text_by_NID(ptr, NID_commonName, cn, *sz);
+	if (X509_NAME_get_text_by_NID(ptr, NID_commonName, cn, sz) == -1) {
+		free(cn);
+		return NULL;
+	}
+	*psz = sz;
 	return cn;
 }
 
@@ -1066,6 +1477,21 @@ ssl_x509_fingerprint_sha1(X509 *crt, unsigned char *fpr)
 	return X509_digest(crt, EVP_sha1(), fpr, &sz) ? 0 : -1;
 }
 
+/*
+ * Returns the result of ssl_x509_fingerprint_sha1() as hex characters with or
+ * without colons in a newly allocated string.
+ */
+char *
+ssl_x509_fingerprint(X509 *crt, int colons)
+{
+	unsigned char fpr[SSL_X509_FPRSZ];
+
+	if (ssl_x509_fingerprint_sha1(crt, fpr) == -1)
+		return NULL;
+
+	return ssl_sha1_to_str(fpr, colons);
+}
+
 #ifndef OPENSSL_NO_DH
 /*
  * Increment the reference count of DH parameters in a thread-safe
@@ -1074,10 +1500,10 @@ ssl_x509_fingerprint_sha1(X509 *crt, unsigned char *fpr)
 void
 ssl_dh_refcount_inc(DH *dh)
 {
-#ifdef OPENSSL_THREADS
+#if defined(OPENSSL_THREADS) && ((OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER))
 	CRYPTO_add(&dh->references, 1, CRYPTO_LOCK_DH);
 #else /* !OPENSSL_THREADS */
-	dh->references++;
+	DH_up_ref(dh);
 #endif /* !OPENSSL_THREADS */
 }
 #endif /* !OPENSSL_NO_DH */
@@ -1089,10 +1515,10 @@ ssl_dh_refcount_inc(DH *dh)
 void
 ssl_key_refcount_inc(EVP_PKEY *key)
 {
-#ifdef OPENSSL_THREADS
+#if defined(OPENSSL_THREADS) && ((OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER))
 	CRYPTO_add(&key->references, 1, CRYPTO_LOCK_EVP_PKEY);
 #else /* !OPENSSL_THREADS */
-	key->references++;
+	EVP_PKEY_up_ref(key);
 #endif /* !OPENSSL_THREADS */
 }
 
@@ -1104,10 +1530,10 @@ ssl_key_refcount_inc(EVP_PKEY *key)
 void
 ssl_x509_refcount_inc(X509 *crt)
 {
-#ifdef OPENSSL_THREADS
+#if defined(OPENSSL_THREADS) && ((OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER))
 	CRYPTO_add(&crt->references, 1, CRYPTO_LOCK_X509);
 #else /* !OPENSSL_THREADS */
-	crt->references++;
+	X509_up_ref(crt);
 #endif /* !OPENSSL_THREADS */
 }
 
@@ -1178,8 +1604,10 @@ ssl_wildcardify(const char *hostname)
 	if (!(wildcarded = malloc(dotsz + 2)))
 		return NULL;
 	wildcarded[0] = '*';
-	strncpy(wildcarded + 1, dot, dotsz);
-	wildcarded[dotsz + 1] = '\0';
+	for (size_t i = 0; i < dotsz; i++) {
+		wildcarded[i+1] = dot[i];
+	}
+	wildcarded[dotsz+1] = '\0';
 	return wildcarded;
 }
 
@@ -1208,8 +1636,7 @@ ssl_x509_names_match(X509 *crt, const char *dnsname)
 	altnames = X509_get_ext_d2i(crt, NID_subject_alt_name, 0, 0);
 	if (!altnames)
 		return 0;
-	int i;
-	for (i = 0; i < sk_GENERAL_NAME_num(altnames); i++) {
+	for (int i = 0; i < sk_GENERAL_NAME_num(altnames); i++) {
 		GENERAL_NAME *gn = sk_GENERAL_NAME_value(altnames, i);
 		if (gn->type == GEN_DNS) {
 			unsigned char *altname;
@@ -1261,8 +1688,7 @@ ssl_x509_names(X509 *crt)
 		*p = NULL;
 		return res;
 	}
-	int i;
-	for (i = 0; i < sk_GENERAL_NAME_num(altnames); i++) {
+	for (int i = 0; i < sk_GENERAL_NAME_num(altnames); i++) {
 		GENERAL_NAME *gn = sk_GENERAL_NAME_value(altnames, i);
 		if (gn->type == GEN_DNS) {
 			unsigned char *altname;
@@ -1285,8 +1711,7 @@ ssl_x509_names(X509 *crt)
 				free(res);
 				return NULL;
 			}
-			int j;
-			for (j = 0; j < altnamesz; j++) {
+			for (int j = 0; j < altnamesz; j++) {
 				(*p)[j] = altname[j] ? altname[j] : '!';
 			}
 			(*p)[altnamesz] = '\0';
@@ -1304,28 +1729,32 @@ ssl_x509_names(X509 *crt)
  * in the Subject DN CN and subjectAltNames extension, separated by slashes.
  * Caller must free returned buffer.
  * Embedded NULL characters in hostnames are replaced with '!'.
+ * If no CN and no subjectAltNames are found, returns "-".
  */
 char *
 ssl_x509_names_to_str(X509 *crt)
 {
 	char **names;
 	size_t sz;
-	char *buf, *next;
-	char **p;
+	char *buf = NULL, *next;
 
 	names = ssl_x509_names(crt);
 	if (!names)
-		return NULL;
+		return strdup("-");
 
 	sz = 0;
-	for (p = names; *p; p++) {
+	for (char **p = names; *p; p++) {
 		sz += strlen(*p) + 1;
+	}
+	if (!sz) {
+		buf = strdup("-");
+		goto out1;
 	}
 
 	if (!(buf = malloc(sz)))
-		goto out;
+		goto out2;
 	next = buf;
-	for (p = names; *p; p++) {
+	for (char **p = names; *p; p++) {
 		char *src = *p;
 		while (*src) {
 			*next++ = *src++;
@@ -1333,9 +1762,10 @@ ssl_x509_names_to_str(X509 *crt)
 		*next++ = '/';
 	}
 	*--next = '\0';
-out:
-	for (p = names; *p; p++)
+out2:
+	for (char **p = names; *p; p++)
 		free(*p);
+out1:
 	free(names);
 	return buf;
 }
@@ -1393,7 +1823,7 @@ ssl_x509_aias(X509 *crt, const int type)
 				j++;
 		}
 	}
-	res[j] = '\0';
+	res[j] = NULL;
 	sk_ACCESS_DESCRIPTION_pop_free(aias, ACCESS_DESCRIPTION_free);
 	return res;
 }
@@ -1506,7 +1936,7 @@ ssl_session_to_str(SSL_SESSION *sess)
 
 /*
  * Returns non-zero if the session timeout has not expired yet,
- * zero if the session has expired or an error occured.
+ * zero if the session has expired or an error occurred.
  */
 int
 ssl_session_is_valid(SSL_SESSION *sess)
@@ -1521,9 +1951,9 @@ ssl_session_is_valid(SSL_SESSION *sess)
 	if ((curtime < 0) || ((time_t)curtime != curtimet))
 		return 0;
 	timeout = SSL_SESSION_get_timeout(sess);
-	if (curtime > LONG_MAX - timeout)
+	if (curtime < timeout)
 		return 0;
-	return (SSL_SESSION_get_time(sess) < curtime + timeout);
+	return (SSL_SESSION_get_time(sess) > curtime - timeout);
 }
 
 /*
@@ -1544,27 +1974,46 @@ ssl_is_ocspreq(const unsigned char *buf, size_t sz)
 	return 1;
 }
 
-#ifndef OPENSSL_NO_TLSEXT
 /*
- * Ugly hack to manually parse the SNI TLS extension from a clientHello buf.
- * This is needed because of limitations in the OpenSSL SNI API which only
- * allows to read the indicated server name at the time when we have to
- * provide the server certificate.  It is not possible to asynchroniously
- * read the indicated server name, wait for some event to happen, and then
- * later to provide the server certificate to use and continue the handshake.
+ * Ugly hack to manually parse a clientHello message from a memory buffer.
+ * This is needed in order to be able to support SNI and STARTTLS.
  *
- * This function takes a buffer containing (part of) a clientHello message as
- * seen on the network.
+ * The OpenSSL SNI API only allows to read the indicated server name at the
+ * time when we have to provide the server certificate.  OpenSSL does not
+ * allow to asynchronously read the indicated server name, wait for some
+ * unrelated event to happen, and then later to provide the server certificate
+ * to use and continue the handshake.  Therefore we resort to parsing the
+ * server name from the ClientHello manually before OpenSSL gets to work on it.
  *
- * If server name extension was found and parsed, returns server name buffer
- * that must be free'd by the caller.
- * If parsing failed for inconsistency reasons or if SNI TLS extension was
- * not present in the clientHello, returns NULL.
- * If not enough data was provided in buf, returns NULL and *sz is set to -1
- * to indicate that a call to ssl_tls_clienthello_parse_sni() with more data
- * in buf might succeed.
+ * For STARTTLS support in autossl mode, we need to peek into the buffer of
+ * received octets and decide whether we have something that resembles a
+ * (possibly incomplete) ClientHello message, so we can upgrade the connection
+ * to SSL automatically.
+ *
+ * This function takes a buffer containing (part of) a ClientHello message as
+ * seen on the network as input.
+ *
+ * Returns:
+ *  1  if buf does not contain a complete ClientHello message;
+ *     *clienthello may point to the start of a truncated ClientHello message,
+ *     indicating that the caller should retry later with more bytes available
+ *  0  if buf contains a complete ClientHello message;
+ *     *clienthello will point to the start of the complete ClientHello message
+ *
+ * If a servername pointer was supplied by the caller, and a server name
+ * extension was found and parsed, the server name is returned in *servername
+ * as a newly allocated string that must be freed by the caller.  This may
+ * only occur for a return value of 0.
+ *
+ * If search is non-zero, then the buffer will be searched for a ClientHello
+ * message beginning at offsets >= 0, whereas if search is zero, only
+ * ClientHello messages starting at offset 0 will be considered.
+ *
+ * This code currently supports SSL 2.0, SSL 3.0 and TLS 1.0-1.2.
  *
  * References:
+ * draft-hickman-netscape-ssl-00: The SSL Protocol
+ * RFC 6101: The Secure Sockets Layer (SSL) Protocol Version 3.0
  * RFC 2246: The TLS Protocol Version 1.0
  * RFC 3546: Transport Layer Security (TLS) Extensions
  * RFC 4346: The Transport Layer Security (TLS) Protocol Version 1.1
@@ -1572,155 +2021,265 @@ ssl_is_ocspreq(const unsigned char *buf, size_t sz)
  * RFC 5246: The Transport Layer Security (TLS) Protocol Version 1.2
  * RFC 6066: Transport Layer Security (TLS) Extensions: Extension Definitions
  */
-char *
-ssl_tls_clienthello_parse_sni(const unsigned char *buf, ssize_t *sz)
+int
+ssl_tls_clienthello_parse(const unsigned char *buf, ssize_t sz, int search,
+                          const unsigned char **clienthello, char **servername)
 {
-#ifdef DEBUG_SNI_PARSER
-#define DBG_printf(...) log_dbg_printf("SNI Parser: " __VA_ARGS__)
-#else /* !DEBUG_SNI_PARSER */
+#ifdef DEBUG_CLIENTHELLO_PARSER
+#define DBG_printf(...) log_dbg_printf("ClientHello parser: " __VA_ARGS__)
+#else /* !DEBUG_CLIENTHELLO_PARSER */
 #define DBG_printf(...) 
-#endif /* !DEBUG_SNI_PARSER */
+#endif /* !DEBUG_CLIENTHELLO_PARSER */
 	const unsigned char *p = buf;
-	ssize_t n = *sz;
-	char *servername = NULL;
+	ssize_t n = sz;
+	char *sn = NULL;
 
-	DBG_printf("buffer length %zd\n", n);
+	*clienthello = NULL;
 
-	if (n < 1) {
-		*sz = -1;
-		goto out;
-	}
-	DBG_printf("byte 0: %02x\n", *p);
-	/* first byte 0x80, third byte 0x01 is SSLv2 clientHello;
-	 * first byte 0x22, second byte 0x03 is SSLv3/TLSv1.x clientHello */
-	if (*p != 22) /* record type: handshake protocol */
-		goto out;
-	p++; n--;
+	DBG_printf("parsing buffer of sz %zd\n", sz);
 
-	if (n < 2) {
-		*sz = -1;
-		goto out;
-	}
-	DBG_printf("version: %02x %02x\n", p[0], p[1]);
-	if (p[0] != 3)
-		goto out;
-	p += 2; n -= 2;
+	do {
+		if (*clienthello) {
+			/*
+			 * Rewind after skipping an invalid ClientHello by
+			 * restarting the search one byte after the beginning
+			 * of the last candidate
+			 */
+			p = (*clienthello) + 1;
+			n = sz - (p - buf);
+			if (sn) {
+				free(sn);
+				sn = NULL;
+			}
+		}
 
-	if (n < 2) {
-		*sz = -1;
-		goto out;
-	}
-	DBG_printf("length: %02x %02x\n", p[0], p[1]);
-#ifdef DEBUG_SNI_PARSER
-	ssize_t recordlen = p[1] + (p[0] << 8);
-	DBG_printf("recordlen=%zd\n", recordlen);
-#endif /* DEBUG_SNI_PARSER */
-	p += 2; n -= 2;
+		if (search) {
+			/* Search for a potential ClientHello */
+			while ((n > 0) && (*p != 0x16) && (*p != 0x80)) {
+				p++; n--;
+			}
+			if (n <= 0) {
+				/* Search completed without a match; reset
+				 * clienthello to NULL to indicate to the
+				 * caller that this buffer does not need to be
+				 * retried */
+				DBG_printf("===> No match:"
+				           " rv 1, *clienthello NULL\n");
+				*clienthello = NULL;
+				return 1;
+			}
+		}
+		*clienthello = p;
+		DBG_printf("candidate at offset %td\n", p - buf);
 
-	if (n < 1) {
-		*sz = -1;
-		goto out;
-	}
-	DBG_printf("message type: %i\n", *p);
-	if (*p != 1) /* message type: ClientHello */
-		goto out;
-	p++; n--;
+		DBG_printf("byte 0: %02x\n", *p);
+		/* +0 0x80 +2 0x01 SSLv2 short header, clientHello;
+		 * +0 0x16 +1 0x03 SSLv3/TLSv1.x handshake, clientHello */
+		if (*p == 0x80) {
+			/* SSLv2 handled here */
+			p++; n--;
 
-	if (n < 3) {
-		*sz = -1;
-		goto out;
-	}
-	DBG_printf("message len: %02x %02x %02x\n", p[0], p[1], p[2]);
-	ssize_t msglen = p[2] + (p[1] << 8) + (p[0] << 16);
-	DBG_printf("msglen=%zd\n", msglen);
-	if (msglen < 4)
-		goto out;
-	p += 3; n -= 3;
+			if (n < 10) { /* length + 9 */
+				DBG_printf("===> [SSLv2] Truncated:"
+				           " rv 1, *clienthello set\n");
+				return 1;
+			}
 
-	if (n < msglen) {
-		*sz = -1;
-		goto out;
-	}
-	n = msglen; /* only parse first message */
+			DBG_printf("length: %02x\n", p[0]);
+			if (n - 1 < p[0]) {
+				DBG_printf("===> [SSLv2] Truncated:"
+				           " rv 1, *clienthello set\n");
+				return 1;
+			}
+			p++; n--;
 
-	if (n < 2)
-		goto out;
-	DBG_printf("clienthello version %02x %02x\n", p[0], p[1]);
-	if (p[0] != 3)
-		goto out;
-	p += 2; n -= 2;
+			DBG_printf("msgtype: %02x\n", p[0]);
+			if (*p != 0x01)
+				continue;
+			p++; n--;
 
-	if (n < 32)
-		goto out;
-	DBG_printf("clienthello random %02x %02x %02x %02x ...\n",
-	           p[0], p[1], p[2], p[3]);
-	DBG_printf("compare localtime: %08x\n", (unsigned int)time(NULL));
-	p += 32; n -= 32;
+			DBG_printf("version: %02x %02x\n", p[0], p[1]);
+			/* byte order is actually swapped for SSLv2 */
+			if (!(
+#ifdef HAVE_SSLV2
+			      (p[0] == 0x00 && p[1] == 0x02) ||
+#endif /* HAVE_SSLV2 */
+			      (p[0] == 0x03 && p[1] <= 0x03)))
+				continue;
+			p += 2; n -= 2;
 
-	if (n < 1)
-		goto out;
-	DBG_printf("clienthello sidlen %02x\n", *p);
-	ssize_t sidlen = *p; /* session id length, 0..32 */
-	p += 1; n -= 1;
-	if (n < sidlen)
-		goto out;
-	p += sidlen; n -= sidlen;
+			DBG_printf("cipher-spec-len: %02x %02x\n", p[0], p[1]);
+			ssize_t cipherspec_len = p[0] << 8 | p[1];
+			p += 2; n -= 2;
 
-	if (n < 2)
-		goto out;
-	DBG_printf("clienthello cipher suites length %02x %02x\n", p[0], p[1]);
-	ssize_t suiteslen = p[1] + (p[0] << 8);
-	p += 2; n -= 2;
-	if (n < suiteslen) {
-		DBG_printf("n < suiteslen (%zd, %zd)\n", n, suiteslen);
-		goto out;
-	}
-	p += suiteslen;
-	n -= suiteslen;
+			DBG_printf("session-id-len: %02x %02x\n", p[0], p[1]);
+			ssize_t sessionid_len = p[0] << 8 | p[1];
+			p += 2; n -= 2;
 
-	if (n < 1)
-		goto out;
-	DBG_printf("clienthello compress methods length %02x\n", *p);
-	ssize_t compslen = *p;
-	p++; n--;
-	if (n < compslen)
-		goto out;
-	p += compslen;
-	n -= compslen;
+			DBG_printf("challenge-len: %02x %02x\n", p[0], p[1]);
+			ssize_t challenge_len = p[0] << 8 | p[1];
+			p += 2; n -= 2;
+			if (challenge_len < 16 || challenge_len > 32)
+				continue;
 
-	/* begin of extensions */
+			if (n < cipherspec_len
+			      + sessionid_len
+			      + challenge_len) {
+				DBG_printf("===> [SSLv2] Truncated:"
+				           " rv 1, *clienthello set\n");
+				return 1;
+			}
 
-	if (n < 2)
-		goto out;
-	DBG_printf("tlsexts length %02x %02x\n", p[0], p[1]);
-	ssize_t tlsextslen = p[1] + (p[0] << 8);
-	DBG_printf("tlsextslen %zd\n", tlsextslen);
-	p += 2;
-	n -= 2;
+			p += cipherspec_len + sessionid_len + challenge_len;
+			n -= cipherspec_len + sessionid_len + challenge_len;
+			goto done_parsing;
+		} else
+		if (*p != 0x16) {
+			/* this can only happen if search is 0 */
+			DBG_printf("===> No match: rv 1, *clienthello NULL\n");
+			*clienthello = NULL;
+			return 1;
+		}
+		p++; n--;
 
-	if (n < tlsextslen)
-		goto out;
-	n = tlsextslen; /* only parse extensions, ignore trailing bits */
+		if (n < 2) {
+			DBG_printf("===> Truncated: rv 1, *clienthello set\n");
+			return 1;
+		}
+		DBG_printf("version: %02x %02x\n", p[0], p[1]);
+		/* This supports up to TLS 1.2 (0x03 0x03) and will need to be
+		 * updated for TLS 1.3 once that is standardized and still
+		 * compatible with this parser; remember to also update the
+		 * inner version check below */
+		if (p[0] != 0x03 || p[1] > 0x03)
+			continue;
+		p += 2; n -= 2;
 
-	while (n > 0) {
-		if (n < 4)
-			goto out;
-		DBG_printf("tlsext type %02x %02x len %02x %02x\n",
+		if (n < 2) {
+			DBG_printf("===> Truncated: rv 1, *clienthello set\n");
+			return 1;
+		}
+		DBG_printf("length: %02x %02x\n", p[0], p[1]);
+		ssize_t recordlen = p[1] + (p[0] << 8);
+		DBG_printf("recordlen=%zd\n", recordlen);
+		p += 2; n -= 2;
+		if (recordlen < 36) /* arbitrary size too small for a c-h */
+			continue;
+		if (n < recordlen) {
+			DBG_printf("n < recordlen: n=%zd\n", n);
+			DBG_printf("===> Truncated: rv 1, *clienthello set\n");
+			return 1;
+		}
+
+		/* from here we give up on a candidate if there is not enough
+		 * data available in the buffer, because we already checked the
+		 * availability of the whole record. */
+
+		if (n < 1)
+			continue;
+		DBG_printf("message type: %i\n", *p);
+		if (*p != 0x01) /* message type: ClientHello */
+			continue;
+		p++; n--;
+
+		if (n < 3)
+			continue;
+		DBG_printf("message len: %02x %02x %02x\n", p[0], p[1], p[2]);
+		ssize_t msglen = p[2] + (p[1] << 8) + (p[0] << 16);
+		DBG_printf("msglen=%zd\n", msglen);
+		p += 3; n -= 3;
+		if (msglen < 32) /* arbitrary size too small for a c-h */
+			continue;
+		if (msglen != recordlen - 4) {
+			DBG_printf("msglen != recordlen - 4\n");
+			continue;
+		}
+		if (n < msglen)
+			continue;
+		n = msglen; /* only parse first message */
+
+		if (n < 2)
+			continue;
+		DBG_printf("clienthello version %02x %02x\n", p[0], p[1]);
+		/* inner version check, see outer one above */
+		if (p[0] != 0x03 || p[1] > 0x03)
+			continue;
+		p += 2; n -= 2;
+
+		if (n < 32)
+			continue;
+		DBG_printf("clienthello random %02x %02x %02x %02x ...\n",
 		           p[0], p[1], p[2], p[3]);
-		unsigned short exttype = p[1] + (p[0] << 8);
-		ssize_t extlen = p[3] + (p[2] << 8);
-		p += 4;
-		n -= 4;
-		if (n < extlen)
-			goto out;
-		switch (exttype) {
-			case 0:
-			{
+		DBG_printf("compare localtime: %08x\n",
+		           (unsigned int)time(NULL));
+		p += 32; n -= 32;
+
+		if (n < 1)
+			continue;
+		DBG_printf("clienthello sidlen %02x\n", *p);
+		ssize_t sidlen = *p; /* session id length, 0..32 */
+		p += 1; n -= 1;
+		if (n < sidlen)
+			continue;
+		p += sidlen; n -= sidlen;
+
+		if (n < 2)
+			continue;
+		DBG_printf("clienthello cipher suites length %02x %02x\n",
+		           p[0], p[1]);
+		ssize_t suiteslen = p[1] + (p[0] << 8);
+		p += 2; n -= 2;
+		if (n < suiteslen)
+			continue;
+		p += suiteslen;
+		n -= suiteslen;
+
+		if (n < 1)
+			continue;
+		DBG_printf("clienthello compress methods length %02x\n", *p);
+		ssize_t compslen = *p;
+		p++; n--;
+		if (n < compslen)
+			continue;
+		p += compslen;
+		n -= compslen;
+
+		/* begin of extensions */
+
+		if (n == 0) {
+			/* valid ClientHello without extensions */
+			DBG_printf("===> Match: rv 0, *clienthello set\n");
+			if (servername)
+				*servername = NULL;
+			return 0;
+		}
+		if (n < 2)
+			continue;
+		DBG_printf("tlsexts length %02x %02x\n", p[0], p[1]);
+		ssize_t tlsextslen = p[1] + (p[0] << 8);
+		DBG_printf("tlsextslen %zd\n", tlsextslen);
+		p += 2; n -= 2;
+		if (n < tlsextslen)
+			continue;
+		n = tlsextslen; /* only parse exts, ignore trailing bits */
+
+		while (n > 0) {
+			if (n < 4)
+				goto continue_search;
+			DBG_printf("tlsext type %02x %02x len %02x %02x\n",
+			           p[0], p[1], p[2], p[3]);
+			unsigned short exttype = p[1] + (p[0] << 8);
+			ssize_t extlen = p[3] + (p[2] << 8);
+			p += 4; n -= 4;
+			if (n < extlen)
+				goto continue_search;
+			switch (exttype) {
+			case 0: {
 				ssize_t extn = extlen;
 				const unsigned char *extp = p;
 
 				if (extn < 2)
-					goto out;
+					goto continue_search;
 				DBG_printf("list length %02x %02x\n",
 				           extp[0], extp[1]);
 				ssize_t namelistlen = extp[1] + (extp[0] << 8);
@@ -1729,11 +2288,11 @@ ssl_tls_clienthello_parse_sni(const unsigned char *buf, ssize_t *sz)
 				extn -= 2;
 
 				if (namelistlen != extn)
-					goto out;
+					goto continue_search;
 
 				while (extn > 0) {
 					if (extn < 3)
-						goto out;
+						goto continue_search;
 					DBG_printf("ServerName type %02x"
 					           " len %02x %02x\n",
 					           extp[0], extp[1], extp[2]);
@@ -1742,17 +2301,23 @@ ssl_tls_clienthello_parse_sni(const unsigned char *buf, ssize_t *sz)
 					extp += 3;
 					extn -= 3;
 					if (snlen > extn)
-						goto out;
+						goto continue_search;
 					if (snlen > TLSEXT_MAXLEN_host_name)
-						goto out;
-					if (sntype == 0) {
-						servername = malloc(snlen + 1);
-						memcpy(servername, extp, snlen);
-						servername[snlen] = '\0';
+						goto continue_search;
+					/*
+					 * We copy the first name only.
+					 * RFC 6066: "The ServerNameList MUST
+					 * NOT contain more than one name of
+					 * the same name_type."
+					 */
+					if (servername &&
+					    sntype == 0 && sn == NULL) {
+						sn = malloc(snlen + 1);
+						memcpy(sn, extp, snlen);
+						sn[snlen] = '\0';
 						/* deliberately not checking
 						 * for malformed hostnames
 						 * containing invalid chars */
-						goto out;
 					}
 					extp += snlen;
 					extn -= snlen;
@@ -1762,21 +2327,38 @@ ssl_tls_clienthello_parse_sni(const unsigned char *buf, ssize_t *sz)
 			default:
 				DBG_printf("skipped\n");
 				break;
-		}
-		p += extlen;
-		n -= extlen;
-	}
+			}
+			p += extlen;
+			n -= extlen;
+		} /* while have more extensions */
 
-#ifdef DEBUG_SNI_PARSER
-	if (n > 0) {
-		DBG_printf("unparsed next bytes %02x %02x %02x %02x\n",
-		           p[0], p[1], p[2], p[3]);
+done_parsing:
+		;
+#ifdef DEBUG_CLIENTHELLO_PARSER
+		if (n > 0) {
+			DBG_printf("unparsed next bytes %02x %02x %02x %02x\n",
+			           p[0], p[1], p[2], p[3]);
+		}
+#endif /* DEBUG_CLIENTHELLO_PARSER */
+		DBG_printf("%zd bytes unparsed\n", n);
+
+		/* Valid ClientHello with or without server name */
+		DBG_printf("===> Match: rv 0, *clienthello set\n");
+		if (servername)
+			*servername = sn;
+		return 0;
+continue_search:
+		;
+	} while (search && n > 0);
+
+	/* No valid ClientHello messages found, not even a truncated one */
+	DBG_printf("===> No match: rv 1, *clienthello NULL\n");
+	*clienthello = NULL;
+	if (sn) {
+		free(sn);
+		sn = NULL;
 	}
-#endif /* DEBUG_SNI_PARSER */
-out:
-	DBG_printf("%zd bytes unparsed\n", n);
-	return servername;
+	return 1;
 }
-#endif /* !OPENSSL_NO_TLSEXT */
 
 /* vim: set noet ft=c: */

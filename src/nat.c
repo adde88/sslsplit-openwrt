@@ -1,29 +1,29 @@
-/*
- * SSLsplit - transparent and scalable SSL/TLS interception
- * Copyright (c) 2009-2014, Daniel Roethlisberger <daniel@roe.ch>
+/*-
+ * SSLsplit - transparent SSL/TLS interception
+ * https://www.roe.ch/SSLsplit
+ *
+ * Copyright (c) 2009-2019, Daniel Roethlisberger <daniel@roe.ch>.
  * All rights reserved.
- * http://www.roe.ch/SSLsplit
  *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice unmodified, this list of conditions, and the following
- *    disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
- * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
- * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER AND CONTRIBUTORS ``AS IS''
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "nat.h"
@@ -67,10 +67,13 @@
 #include <limits.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter_ipv6.h>
+#include <linux/if.h>
+#include <linux/netfilter_ipv6/ip6_tables.h>
 #endif /* HAVE_NETFILTER */
 
+
 /*
- * Access NAT state tables in a NAT engine independant way.
+ * Access NAT state tables in a NAT engine independent way.
  * Adding support for additional NAT engines should require only
  * changes in this file.
  */
@@ -124,6 +127,10 @@ nat_pf_lookup_cb(struct sockaddr *dst_addr, socklen_t *dst_addrlen,
 #define sport sxport.port
 #define dport dxport.port
 #define rdport rdxport.port
+#ifdef v4addr /* XNU 4570.1.46 and newer */
+#define v4 v4addr
+#define v6 v6addr
+#endif /* XNU 4570.1.46 and newer */
 #endif /* __APPLE__ */
 	struct sockaddr_storage our_addr;
 	socklen_t our_addrlen;
@@ -190,11 +197,16 @@ nat_pf_lookup_cb(struct sockaddr *dst_addr, socklen_t *dst_addrlen,
 		dst_sai->sin6_family = nl.af;
 		*dst_addrlen = sizeof(struct sockaddr_in6);
 	}
+
 	return 0;
 #ifdef __APPLE__
 #undef sport
 #undef dport
 #undef rdport
+#ifdef v4addr /* XNU 4570.1.46 and newer */
+#undef v4
+#undef v6
+#endif /* XNU 4570.1.46 and newer */
 #endif /* __APPLE__ */
 }
 #endif /* HAVE_PF */
@@ -312,31 +324,40 @@ nat_ipfilter_lookup_cb(struct sockaddr *dst_addr, socklen_t *dst_addrlen,
 
 #ifdef HAVE_NETFILTER
 /*
- * It seems that SO_ORIGINAL_DST only works for IPv4 and that there
- * is no IPv6 equivalent yet.  Someone please port pf to Linux...
- *
- * http://lists.netfilter.org/pipermail/netfilter/2007-July/069259.html
- *
- * It looks like TPROXY is the only way to go on Linux with IPv6.
+ * Linux commit 121d1e0941e05c64ee4223064dd83eb24e871739 adding
+ * IP6T_SO_ORIGINAL_DST was first released as part of Linux v3.8-rc1 in 2012.
+ * Before that, this interface only supported IPv4.
  */
 static int
 nat_netfilter_lookup_cb(struct sockaddr *dst_addr, socklen_t *dst_addrlen,
                         evutil_socket_t s,
-                        struct sockaddr *src_addr,
-                        UNUSED socklen_t src_addrlen)
+                        struct sockaddr *src_addr, UNUSED socklen_t src_addrlen)
 {
 	int rv;
 
-	if (src_addr->sa_family != AF_INET) {
+	if (src_addr->sa_family == AF_INET) {
+		rv = getsockopt(s, SOL_IP, SO_ORIGINAL_DST,
+		                dst_addr, dst_addrlen);
+		if (rv == -1) {
+			log_err_printf("Error from getsockopt("
+			               "SO_ORIGINAL_DST): %s\n",
+			               strerror(errno));
+		}
+	} else {
+#ifdef IP6T_SO_ORIGINAL_DST
+		rv = getsockopt(s, SOL_IPV6, IP6T_SO_ORIGINAL_DST,
+		                dst_addr, dst_addrlen);
+		if (rv == -1) {
+			log_err_printf("Error from getsockopt("
+			               "IP6T_SO_ORIGINAL_DST): %s\n",
+			               strerror(errno));
+		}
+#else /* !IP6T_SO_ORIGINAL_DST */
 		log_err_printf("The netfilter NAT engine only "
-		               "supports IPv4 state lookups\n");
+		               "supports IPv4 state lookups on "
+		               "this version of Linux\n");
 		return -1;
-	}
-
-	rv = getsockopt(s, SOL_IP, SO_ORIGINAL_DST, dst_addr, dst_addrlen);
-	if (rv == -1) {
-		log_err_printf("Error from getsockopt(SO_ORIGINAL_DST): %s\n",
-		               strerror(errno));
+#endif /* !IP6T_SO_ORIGINAL_DST */
 	}
 	return rv;
 }
@@ -431,7 +452,11 @@ struct engine engines[] = {
 #endif /* HAVE_IPFILTER */
 #ifdef HAVE_NETFILTER
 	{
+#ifdef IP6T_SO_ORIGINAL_DST
+		"netfilter", 1, 0,
+#else /* !IP6T_SO_ORIGINAL_DST */
 		"netfilter", 0, 0,
+#endif /* !IP6T_SO_ORIGINAL_DST */
 		NULL, NULL, NULL,
 		nat_netfilter_lookup_cb, NULL
 	},
@@ -468,16 +493,15 @@ nat_getdefaultname(void)
 static int
 nat_index(const char *name)
 {
-	if (name) {
-		int i;
-		for (i = 0; engines[i].name; i++)
+	if (name)
+		for (int i = 0; engines[i].name; i++)
 			if (!strcmp(name, engines[i].name))
-				return i; }
+				return i;
 	return ((sizeof(engines) / sizeof(struct engine)) - 1);
 }
 
 /*
- * Returns 1 if the named NAT engine exists, 0 if it does not exist.
+ * Returns !=0 if the named NAT engine exists, 0 if it does not exist.
  * NULL refers to the default NAT engine.
  */
 int
@@ -486,6 +510,18 @@ nat_exist(const char *name)
 	if (!name)
 		name = engines[0].name;
 	return !!engines[nat_index(name)].name;
+}
+
+/*
+ * Returns !=0 if the named NAT engine has been marked as used, 0 if not.
+ * NULL refers to the default NAT engine.
+ */
+int
+nat_used(const char *name)
+{
+	if (!name)
+		name = engines[0].name;
+	return !!engines[nat_index(name)].used;
 }
 
 /*
@@ -535,8 +571,7 @@ nat_ipv6ready(const char *name)
 void
 nat_list_engines(void)
 {
-	int i;
-	for (i = 0; engines[i].name; i++) {
+	for (int i = 0; engines[i].name; i++) {
 		fprintf(stdout, "%s%s\n", engines[i].name,
 		                          i ? "" : " (default)");
 	}
@@ -557,13 +592,21 @@ nat_list_engines(void)
 int
 nat_preinit(void)
 {
-	int i;
-	for (i = 0; engines[i].preinitcb && engines[i].used; i++) {
+	for (int i = 0; engines[i].preinitcb && engines[i].used; i++) {
 		log_dbg_printf("NAT engine preinit '%s'\n", engines[i].name);
 		if (engines[i].preinitcb() == -1)
 			return -1;
 	}
 	return 0;
+}
+
+/*
+ * Undo nat_preinit - close all file descriptors, for use in privsep parent.
+ */
+void
+nat_preinit_undo(void)
+{
+	nat_fini();
 }
 
 /*
@@ -577,8 +620,7 @@ nat_preinit(void)
 int
 nat_init(void)
 {
-	int i;
-	for (i = 0; engines[i].initcb && engines[i].used; i++) {
+	for (int i = 0; engines[i].initcb && engines[i].used; i++) {
 		log_dbg_printf("NAT engine init '%s'\n", engines[i].name);
 		if (engines[i].initcb() == -1)
 			return -1;
@@ -593,8 +635,7 @@ nat_init(void)
 void
 nat_fini(void)
 {
-	int i;
-	for (i = 0; engines[i].finicb && engines[i].used; i++) {
+	for (int i = 0; engines[i].finicb && engines[i].used; i++) {
 		log_dbg_printf("NAT engine fini '%s'\n", engines[i].name);
 		engines[i].finicb();
 	}
@@ -607,8 +648,7 @@ void
 nat_version(void)
 {
 	fprintf(stderr, "NAT engines:");
-	int i;
-	for (i = 0; engines[i].name; i++) {
+	for (int i = 0; engines[i].name; i++) {
 		fprintf(stderr, " %s%s", engines[i].name,
 		                         i ? "" : "*");
 	}
@@ -619,22 +659,17 @@ nat_version(void)
 	fprintf(stderr, "ipfilter: version %d\n", IPFILTER_VERSION);
 #endif /* HAVE_IPFILTER */
 #ifdef HAVE_NETFILTER
-	fprintf(stderr, "netfilter: ");
+	fprintf(stderr, "netfilter:");
 #ifdef IP_TRANSPARENT
 	fprintf(stderr, " IP_TRANSPARENT");
 #else /* !IP_TRANSPARENT */
 	fprintf(stderr, " !IP_TRANSPARENT");
 #endif /* !IP_TRANSPARENT */
-#ifdef SOL_IPV6
-	fprintf(stderr, " SOL_IPV6");
-#else /* !SOL_IPV6 */
-	fprintf(stderr, " !SOL_IPV6");
-#endif /* !SOL_IPV6 */
-#ifdef IPV6_ORIGINAL_DST
-	fprintf(stderr, " IPV6_ORIGINAL_DST");
-#else /* !IPV6_ORIGINAL_DST */
-	fprintf(stderr, " !IPV6_ORIGINAL_DST");
-#endif /* !IPV6_ORIGINAL_DST */
+#ifdef IP6T_SO_ORIGINAL_DST
+	fprintf(stderr, " IP6T_SO_ORIGINAL_DST");
+#else /* !IP6T_SO_ORIGINAL_DST */
+	fprintf(stderr, " !IP6T_SO_ORIGINAL_DST");
+#endif /* !IP6T_SO_ORIGINAL_DST */
 	fprintf(stderr, "\n");
 #endif /* HAVE_NETFILTER */
 }

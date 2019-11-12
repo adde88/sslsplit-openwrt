@@ -1,40 +1,50 @@
-/*
- * SSLsplit - transparent and scalable SSL/TLS interception
- * Copyright (c) 2009-2014, Daniel Roethlisberger <daniel@roe.ch>
+/*-
+ * SSLsplit - transparent SSL/TLS interception
+ * https://www.roe.ch/SSLsplit
+ *
+ * Copyright (c) 2009-2019, Daniel Roethlisberger <daniel@roe.ch>.
  * All rights reserved.
- * http://www.roe.ch/SSLsplit
  *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice unmodified, this list of conditions, and the following
- *    disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
- * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
- * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER AND CONTRIBUTORS ``AS IS''
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "base64.h"
 #include "ssl.h"
 
+#include <limits.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include <check.h>
 
+#ifdef __APPLE__
+#define DLSUFFIX "dylib"
+#else
+#define DLSUFFIX "so"
+#endif
+
+#define TESTKEY "extra/pki/server.key"
 #define TESTCERT "extra/pki/server.crt"
 #define TESTCERT2 "extra/pki/rsa.crt"
+#define ENGINE "extra/engine/dummy-engine."DLSUFFIX
 
 static void
 ssl_setup(void)
@@ -237,7 +247,12 @@ START_TEST(ssl_dnsname_match_16)
 }
 END_TEST
 
-#ifndef OPENSSL_NO_TLSEXT
+static unsigned char clienthello00[] =
+	"\x80\x2b\x01\x00\x02\x00\x12\x00\x00\x00\x10\x07\x00\xc0\x03\x00"
+	"\x80\x01\x00\x80\x06\x00\x40\x04\x00\x80\x02\x00\x80\xe0\xc3\x4a"
+	"\xc6\xa4\x89\x23\x21\xb1\xbb\x51\xc7\x9c\x06\xa5\xff";
+	/* SSL 2.0 */
+
 static unsigned char clienthello01[] =
 	"\x80\x67\x01\x03\x00\x00\x4e\x00\x00\x00\x10\x01\x00\x80\x03\x00"
 	"\x80\x07\x00\xc0\x06\x00\x40\x02\x00\x80\x04\x00\x80\x00\x00\x39"
@@ -246,7 +261,7 @@ static unsigned char clienthello01[] =
 	"\x0a\x00\x00\x15\x00\x00\x12\x00\xfe\xfe\x00\x00\x09\x00\x00\x64"
 	"\x00\x00\x62\x00\x00\x03\x00\x00\x06\xa8\xb8\x93\xbb\x90\xe9\x2a"
 	"\xa2\x4d\x6d\xcc\x1c\xe7\x2a\x80\x21";
-	/* SSL 2.0, no TLS extensions */
+	/* SSL 3.0 in SSL 2.0 record */
 
 static unsigned char clienthello02[] =
 	"\x16\x03\x00\x00\x73\x01\x00\x00\x6f\x03\x00\x00\x34\x01\x1e\x67"
@@ -312,97 +327,240 @@ static unsigned char clienthello05[] =
 	"\x01\x01";
 	/* TLS 1.2, SNI extension with hostname "daniel.roe.ch" */
 
-START_TEST(ssl_tls_clienthello_parse_sni_01)
-{
-	ssize_t sz;
-	char *sni;
+static unsigned char clienthello06[] =
+	"I will start TLS now: "
+	"\x16\x03\x03\x01\x7d\x01\x00\x01\x79\x03\x03\x4f\x7f\x27\xd0\x76"
+	"\x5f\xc1\x3b\xba\x73\xd5\x07\x8b\xd9\x79\xf9\x51\xd4\xce\x7d\x9a"
+	"\xdb\xdf\xf8\x4e\x95\x86\x38\x61\xdd\x84\x2a\x00\x00\xca\xc0\x30"
+	"\xc0\x2c\xc0\x28\xc0\x24\xc0\x14\xc0\x0a\xc0\x22\xc0\x21\x00\xa3"
+	"\x00\x9f\x00\x6b\x00\x6a\x00\x39\x00\x38\x00\x88\x00\x87\xc0\x19"
+	"\xc0\x20\x00\xa7\x00\x6d\x00\x3a\x00\x89\xc0\x32\xc0\x2e\xc0\x2a"
+	"\xc0\x26\xc0\x0f\xc0\x05\x00\x9d\x00\x3d\x00\x35\x00\x84\xc0\x12"
+	"\xc0\x08\xc0\x1c\xc0\x1b\x00\x16\x00\x13\xc0\x17\xc0\x1a\x00\x1b"
+	"\xc0\x0d\xc0\x03\x00\x0a\xc0\x2f\xc0\x2b\xc0\x27\xc0\x23\xc0\x13"
+	"\xc0\x09\xc0\x1f\xc0\x1e\x00\xa2\x00\x9e\x00\x67\x00\x40\x00\x33"
+	"\x00\x32\x00\x9a\x00\x99\x00\x45\x00\x44\xc0\x18\xc0\x1d\x00\xa6"
+	"\x00\x6c\x00\x34\x00\x9b\x00\x46\xc0\x31\xc0\x2d\xc0\x29\xc0\x25"
+	"\xc0\x0e\xc0\x04\x00\x9c\x00\x3c\x00\x2f\x00\x96\x00\x41\x00\x07"
+	"\xc0\x11\xc0\x07\xc0\x16\x00\x18\xc0\x0c\xc0\x02\x00\x05\x00\x04"
+	"\x00\x15\x00\x12\x00\x1a\x00\x09\x00\x14\x00\x11\x00\x19\x00\x08"
+	"\x00\x06\x00\x17\x00\x03\x00\xff\x02\x01\x00\x00\x85\x00\x00\x00"
+	"\x12\x00\x10\x00\x00\x0d\x64\x61\x6e\x69\x65\x6c\x2e\x72\x6f\x65"
+	"\x2e\x63\x68\x00\x0b\x00\x04\x03\x00\x01\x02\x00\x0a\x00\x34\x00"
+	"\x32\x00\x0e\x00\x0d\x00\x19\x00\x0b\x00\x0c\x00\x18\x00\x09\x00"
+	"\x0a\x00\x16\x00\x17\x00\x08\x00\x06\x00\x07\x00\x14\x00\x15\x00"
+	"\x04\x00\x05\x00\x12\x00\x13\x00\x01\x00\x02\x00\x03\x00\x0f\x00"
+	"\x10\x00\x11\x00\x23\x00\x00\x00\x0d\x00\x22\x00\x20\x06\x01\x06"
+	"\x02\x06\x03\x05\x01\x05\x02\x05\x03\x04\x01\x04\x02\x04\x03\x03"
+	"\x01\x03\x02\x03\x03\x02\x01\x02\x02\x02\x03\x01\x01\x00\x0f\x00"
+	"\x01\x01";
+	/* TLS 1.2, SNI extension with hostname "daniel.roe.ch" */
 
-	sz = sizeof(clienthello01) - 1;
-	sni = ssl_tls_clienthello_parse_sni(clienthello01, &sz);
-	fail_unless(sni == NULL, "sni not null but should be");
-	fail_unless(sz != -1, "size is -1 but should not");
+START_TEST(ssl_tls_clienthello_parse_00)
+{
+	int rv;
+	const unsigned char *ch = NULL;
+	char *sni = (void *)0xDEADBEEF;
+
+	rv = ssl_tls_clienthello_parse(clienthello00,
+	                               sizeof(clienthello00) - 1,
+	                               0, &ch, &sni);
+#ifdef HAVE_SSLV2
+	fail_unless(rv == 0, "rv not 0");
+	fail_unless(ch != NULL, "ch is NULL");
+	fail_unless(sni == NULL, "sni not NULL");
+#else /* !HAVE_SSLV2 */
+	fail_unless(rv == 1, "rv not 1");
+	fail_unless(ch == NULL, "ch not NULL");
+	fail_unless(sni == (void*)0xDEADBEEF, "sni modified");
+#endif /* !HAVE_SSLV2 */
 }
 END_TEST
 
-START_TEST(ssl_tls_clienthello_parse_sni_02)
+START_TEST(ssl_tls_clienthello_parse_01)
 {
-	ssize_t sz;
-	char *sni;
+	int rv;
+	const unsigned char *ch = NULL;
+	char *sni = (void *)0xDEADBEEF;
 
-	sz = sizeof(clienthello02) - 1;
-	sni = ssl_tls_clienthello_parse_sni(clienthello02, &sz);
-	fail_unless(sni == NULL, "sni not null but should be");
-	fail_unless(sz != -1, "size is -1 but should not");
+	rv = ssl_tls_clienthello_parse(clienthello01,
+	                               sizeof(clienthello01) - 1,
+	                               0, &ch, &sni);
+	fail_unless(rv == 0, "rv not 0");
+	fail_unless(ch != NULL, "ch is NULL");
+	fail_unless(sni == NULL, "sni not NULL");
 }
 END_TEST
 
-START_TEST(ssl_tls_clienthello_parse_sni_03)
+START_TEST(ssl_tls_clienthello_parse_02)
 {
-	ssize_t sz;
-	char *sni;
+	int rv;
+	const unsigned char *ch = NULL;
+	char *sni = (void *)0xDEADBEEF;
 
-	sz = sizeof(clienthello03) - 1;
-	sni = ssl_tls_clienthello_parse_sni(clienthello03, &sz);
+	rv = ssl_tls_clienthello_parse(clienthello02,
+	                                sizeof(clienthello02) - 1,
+	                                0, &ch, &sni);
+	fail_unless(rv == 0, "rv not 0");
+	fail_unless(ch != NULL, "ch is NULL");
+	fail_unless(sni == NULL, "sni not NULL");
+}
+END_TEST
+
+START_TEST(ssl_tls_clienthello_parse_03)
+{
+	int rv;
+	const unsigned char *ch = NULL;
+	char *sni = NULL;
+
+	rv = ssl_tls_clienthello_parse(clienthello03,
+	                                sizeof(clienthello03) - 1,
+	                                0, &ch, &sni);
+	fail_unless(rv == 0, "rv not 0");
+	fail_unless(ch != NULL, "ch is NULL");
 	fail_unless(sni && !strcmp(sni, "192.168.100.4"),
 	            "sni not '192.168.100.4' but should be");
-	fail_unless(sz != -1, "size is -1 but should not");
 }
 END_TEST
 
-START_TEST(ssl_tls_clienthello_parse_sni_04)
+START_TEST(ssl_tls_clienthello_parse_04)
 {
-	ssize_t sz;
-	char *sni;
+	int rv;
+	const unsigned char *ch = NULL;
+	char *sni = NULL;
 
-	sz = sizeof(clienthello04) - 1;
-	sni = ssl_tls_clienthello_parse_sni(clienthello04, &sz);
+	rv = ssl_tls_clienthello_parse(clienthello04,
+	                                sizeof(clienthello04) - 1,
+	                                0, &ch, &sni);
+	fail_unless(rv == 0, "rv not 0");
+	fail_unless(ch != NULL, "ch is NULL");
 	fail_unless(sni && !strcmp(sni, "kamesh.com"),
 	            "sni not 'kamesh.com' but should be");
-	fail_unless(sz != -1, "size is -1 but should not");
 }
 END_TEST
 
-START_TEST(ssl_tls_clienthello_parse_sni_05)
+START_TEST(ssl_tls_clienthello_parse_05)
 {
 	for (size_t i = 0; i < sizeof(clienthello04) - 1; i++) {
+		int rv;
+		const unsigned char *ch = NULL;
+		char *sni = (void*)0xDEADBEEF;
 		ssize_t sz;
-		char *sni;
 
 		sz = (ssize_t)i;
-		sni = ssl_tls_clienthello_parse_sni(clienthello04, &sz);
-		fail_unless(sni == NULL, "sni not null but should be");
-		fail_unless(sz == -1, "size is not -1 but should be");
+		rv = ssl_tls_clienthello_parse(clienthello04, sz, 0, &ch, &sni);
+		fail_unless(rv == 1, "rv not 1");
+		fail_unless(ch != NULL, "ch is NULL");
+		fail_unless(sni == (void*)0xDEADBEEF, "sni modified");
 	}
 }
 END_TEST
 
-START_TEST(ssl_tls_clienthello_parse_sni_06)
+START_TEST(ssl_tls_clienthello_parse_06)
 {
-	ssize_t sz;
-	char *sni;
+	int rv;
+	const unsigned char *ch = NULL;
+	char *sni = NULL;
 
-	sz = sizeof(clienthello05) - 1;
-	sni = ssl_tls_clienthello_parse_sni(clienthello05, &sz);
+	rv = ssl_tls_clienthello_parse(clienthello05,
+	                                sizeof(clienthello05) - 1,
+	                                0, &ch, &sni);
+	fail_unless(rv == 0, "rv not 0");
+	fail_unless(ch != NULL, "ch is NULL");
 	fail_unless(sni && !strcmp(sni, "daniel.roe.ch"),
 	            "sni not 'daniel.roe.ch' but should be");
-	fail_unless(sz != -1, "size is -1 but should not");
 }
 END_TEST
 
-START_TEST(ssl_tls_clienthello_parse_sni_07)
+START_TEST(ssl_tls_clienthello_parse_07)
 {
 	for (size_t i = 0; i < sizeof(clienthello05) - 1; i++) {
+		int rv;
+		const unsigned char *ch = NULL;
+		char *sni = (void*)0xDEADBEEF;
 		ssize_t sz;
-		char *sni;
 
 		sz = (ssize_t)i;
-		sni = ssl_tls_clienthello_parse_sni(clienthello05, &sz);
-		fail_unless(sni == NULL, "sni not null but should be");
-		fail_unless(sz == -1, "size is not -1 but should be");
+		rv = ssl_tls_clienthello_parse(clienthello05, sz, 0, &ch, &sni);
+		fail_unless(rv == 1, "rv not 1");
+		fail_unless(ch != NULL, "ch is NULL");
+		fail_unless(sni == (void*)0xDEADBEEF, "sni modified");
 	}
 }
 END_TEST
-#endif /* !OPENSSL_NO_TLSEXT */
+
+START_TEST(ssl_tls_clienthello_parse_08)
+{
+	int rv;
+	const unsigned char *ch = (void *)0xDEADBEEF;
+	char *sni = (void *)0xDEADBEEF;
+
+	rv = ssl_tls_clienthello_parse(clienthello06,
+	                                sizeof(clienthello06) - 1,
+	                                0, &ch, &sni);
+	fail_unless(rv == 1, "rv not 1");
+	fail_unless(ch == NULL, "ch not NULL");
+	fail_unless(sni == (void*)0xDEADBEEF, "sni modified");
+}
+END_TEST
+
+START_TEST(ssl_tls_clienthello_parse_09)
+{
+	int rv;
+	const unsigned char *ch = NULL;
+	char *sni = NULL;
+
+	rv = ssl_tls_clienthello_parse(clienthello06,
+	                                sizeof(clienthello06) - 1,
+	                                1, &ch, &sni);
+	fail_unless(rv == 0, "rv not 0");
+	fail_unless(ch != NULL, "ch is NULL");
+	fail_unless((ch - clienthello06) != 21, "ch does not point to start");
+	fail_unless(sni && !strcmp(sni, "daniel.roe.ch"),
+	            "sni not 'daniel.roe.ch' but should be");
+}
+END_TEST
+
+START_TEST(ssl_tls_clienthello_parse_10)
+{
+	int rv;
+	const unsigned char *ch = NULL;
+
+	rv = ssl_tls_clienthello_parse(clienthello06,
+	                                sizeof(clienthello06) - 1,
+	                                1, &ch, NULL);
+	fail_unless(rv == 0, "rv not 0");
+	fail_unless(ch != NULL, "ch is NULL");
+	fail_unless((ch - clienthello06) != 21, "ch does not point to start");
+}
+END_TEST
+
+START_TEST(ssl_key_identifier_sha1_01)
+{
+	X509 *c;
+	EVP_PKEY *k;
+	unsigned char keyid[SSL_KEY_IDSZ];
+
+	c = ssl_x509_load(TESTCERT);
+	fail_unless(!!c, "loading certificate failed");
+	k = ssl_key_load(TESTKEY);
+	fail_unless(!!k, "loading key failed");
+
+	fail_unless(ssl_key_identifier_sha1(k, keyid) == 0,
+	            "ssl_key_identifier_sha1() failed");
+
+	int loc = X509_get_ext_by_NID(c, NID_subject_key_identifier, -1);
+	X509_EXTENSION *ext = X509_get_ext(c, loc);
+	fail_unless(!!ext, "loading ext failed");
+	ASN1_STRING *value = X509_EXTENSION_get_data(ext);
+	fail_unless(ASN1_STRING_length(value) - 2 == SSL_KEY_IDSZ,
+	             "extension length mismatch");
+	fail_unless(!memcmp(ASN1_STRING_get0_data(value) + 2, keyid, SSL_KEY_IDSZ),
+	            "key id mismatch");
+	EVP_PKEY_free(k);
+	X509_free(c);
+}
+END_TEST
 
 START_TEST(ssl_x509_names_01)
 {
@@ -460,6 +618,44 @@ START_TEST(ssl_x509_names_to_str_02)
 }
 END_TEST
 
+START_TEST(ssl_x509_subject_01)
+{
+	X509 *c;
+	char *subject;
+
+	c = ssl_x509_load(TESTCERT);
+	fail_unless(!!c, "loading certificate failed");
+	subject = ssl_x509_subject(c);
+	fail_unless(!!subject, "no string");
+	fail_unless(!strcmp(subject, "/C=CH/O=SSLsplit Test Certificate/"
+	                             "CN=daniel.roe.ch"),
+	            "wrong subject string");
+	X509_free(c);
+}
+END_TEST
+
+START_TEST(ssl_x509_subject_cn_01)
+{
+	X509 *c;
+	char *cn;
+	size_t sz;
+	size_t expsz = strlen("daniel.roe.ch") + 1;
+
+	c = ssl_x509_load(TESTCERT);
+	fail_unless(!!c, "loading certificate failed");
+	cn = ssl_x509_subject_cn(c, &sz);
+	fail_unless(!!cn, "no string");
+	fail_unless(sz >= expsz, "subject CN size too small");
+	fail_unless(!strcmp(cn, "daniel.roe.ch"), "wrong subject CN string");
+#if 0
+	for (unsigned int i = expsz; i < sz; i++) {
+		fail_unless(cn[i] == '\0', "extra byte != 0");
+	}
+#endif
+	X509_free(c);
+}
+END_TEST
+
 START_TEST(ssl_x509_ocsps_01)
 {
 	X509 *c;
@@ -511,6 +707,14 @@ END_TEST
 
 START_TEST(ssl_features_01)
 {
+	long vdiff = ((OPENSSL_VERSION_NUMBER ^ SSLeay()) & 0xfffff000L);
+
+	fail_unless(!vdiff, "OpenSSL version mismatch at runtime");
+}
+END_TEST
+
+START_TEST(ssl_features_02)
+{
 	int have_threads = 0;
 #ifdef OPENSSL_THREADS
 	have_threads = 1;
@@ -518,6 +722,55 @@ START_TEST(ssl_features_01)
 	fail_unless(have_threads, "!OPENSSL_THREADS: no threading support");
 }
 END_TEST
+
+START_TEST(ssl_key_refcount_inc_01)
+{
+	EVP_PKEY *key;
+
+	key = ssl_key_load(TESTKEY);
+	fail_unless(!!key, "loading key failed");
+	ssl_key_refcount_inc(key);
+	ssl_key_refcount_inc(key);
+	ssl_key_refcount_inc(key);
+	EVP_PKEY_free(key);
+	/* these must not crash */
+	EVP_PKEY_free(key);
+	EVP_PKEY_free(key);
+	EVP_PKEY_free(key);
+}
+END_TEST
+
+START_TEST(ssl_x509_refcount_inc_01)
+{
+	X509 *crt;
+
+	crt = ssl_x509_load(TESTCERT);
+	fail_unless(!!crt, "loading certificate failed");
+	ssl_x509_refcount_inc(crt);
+	ssl_x509_refcount_inc(crt);
+	ssl_x509_refcount_inc(crt);
+	X509_free(crt);
+	/* these must not crash */
+	X509_free(crt);
+	X509_free(crt);
+	X509_free(crt);
+}
+END_TEST
+
+#ifndef OPENSSL_NO_ENGINE
+START_TEST(ssl_engine_01)
+{
+	char cwd[PATH_MAX];
+	char *path;
+
+	fail_unless(getcwd(cwd, sizeof(cwd)) == cwd, "getcwd() failed");
+	fail_unless(asprintf(&path, "%s/"ENGINE, cwd) != -1 && !!path,
+	            "constructing engine path failed");
+	fail_unless(ssl_engine(path) == 0, "loading OpenSSL engine failed");
+	free(path);
+}
+END_TEST
+#endif /* !OPENSSL_NO_ENGINE */
 
 Suite *
 ssl_suite(void)
@@ -528,12 +781,14 @@ ssl_suite(void)
 	s = suite_create("ssl");
 
 	tc = tcase_create("ssl_wildcardify");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
 	tcase_add_test(tc, ssl_wildcardify_01);
 	tcase_add_test(tc, ssl_wildcardify_02);
 	tcase_add_test(tc, ssl_wildcardify_03);
 	suite_add_tcase(s, tc);
 
 	tc = tcase_create("ssl_dnsname_match");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
 	tcase_add_test(tc, ssl_dnsname_match_01);
 	tcase_add_test(tc, ssl_dnsname_match_02);
 	tcase_add_test(tc, ssl_dnsname_match_03);
@@ -552,17 +807,25 @@ ssl_suite(void)
 	tcase_add_test(tc, ssl_dnsname_match_16);
 	suite_add_tcase(s, tc);
 
-#ifndef OPENSSL_NO_TLSEXT
-	tc = tcase_create("ssl_tls_clienthello_parse_sni");
-	tcase_add_test(tc, ssl_tls_clienthello_parse_sni_01);
-	tcase_add_test(tc, ssl_tls_clienthello_parse_sni_02);
-	tcase_add_test(tc, ssl_tls_clienthello_parse_sni_03);
-	tcase_add_test(tc, ssl_tls_clienthello_parse_sni_04);
-	tcase_add_test(tc, ssl_tls_clienthello_parse_sni_05);
-	tcase_add_test(tc, ssl_tls_clienthello_parse_sni_06);
-	tcase_add_test(tc, ssl_tls_clienthello_parse_sni_07);
+	tc = tcase_create("ssl_tls_clienthello_parse");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_00);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_01);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_02);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_03);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_04);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_05);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_06);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_07);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_08);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_09);
+	tcase_add_test(tc, ssl_tls_clienthello_parse_10);
 	suite_add_tcase(s, tc);
-#endif /* !OPENSSL_NO_TLSEXT */
+
+	tc = tcase_create("ssl_key_identifier_sha1");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
+	tcase_add_test(tc, ssl_key_identifier_sha1_01);
+	suite_add_tcase(s, tc);
 
 	tc = tcase_create("ssl_x509_names");
 	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
@@ -575,6 +838,16 @@ ssl_suite(void)
 	tcase_add_test(tc, ssl_x509_names_to_str_02);
 	suite_add_tcase(s, tc);
 
+	tc = tcase_create("ssl_x509_subject");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
+	tcase_add_test(tc, ssl_x509_subject_01);
+	suite_add_tcase(s, tc);
+
+	tc = tcase_create("ssl_x509_subject_cn");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
+	tcase_add_test(tc, ssl_x509_subject_cn_01);
+	suite_add_tcase(s, tc);
+
 	tc = tcase_create("ssl_x509_ocsps");
 	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
 	tcase_add_test(tc, ssl_x509_ocsps_01);
@@ -582,12 +855,35 @@ ssl_suite(void)
 	suite_add_tcase(s, tc);
 
 	tc = tcase_create("ssl_is_ocspreq");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
 	tcase_add_test(tc, ssl_is_ocspreq_01);
 	suite_add_tcase(s, tc);
 
 	tc = tcase_create("ssl_features");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
 	tcase_add_test(tc, ssl_features_01);
+	tcase_add_test(tc, ssl_features_02);
 	suite_add_tcase(s, tc);
+
+	tc = tcase_create("ssl_key_refcount_inc");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
+	tcase_add_test(tc, ssl_key_refcount_inc_01);
+	suite_add_tcase(s, tc);
+
+	tc = tcase_create("ssl_x509_refcount_inc");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
+	tcase_add_test(tc, ssl_x509_refcount_inc_01);
+	suite_add_tcase(s, tc);
+
+#ifndef OPENSSL_NO_ENGINE
+	tc = tcase_create("ssl_engine");
+	tcase_add_checked_fixture(tc, ssl_setup, ssl_teardown);
+	tcase_add_test(tc, ssl_engine_01);
+	suite_add_tcase(s, tc);
+#else /* OPENSSL_NO_ENGINE */
+	fprintf(stderr, "ssl: 1 test omitted because OpenSSL has no "
+	                "engine support\n");
+#endif /* OPENSSL_NO_ENGINE */
 
 	return s;
 }
