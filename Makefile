@@ -1,35 +1,47 @@
-PKG_NAME:=sslsplit
-PKG_VERSION:=0.5.5
-PKG_RELEASE:=1
-
-PKG_BUILD_DEPENDS:=libnet-1.2.x
+#
+# Copyright (C) 2016-2018 OpenWrt.org
+#
+# This is free software, licensed under the GNU General Public License v2.
+# See /LICENSE for more information.
+#
 
 include $(TOPDIR)/rules.mk
+
+PKG_NAME:=sslsplit
+PKG_VERSION:=0.5.5
+PKG_RELEASE:=2
+PKG_LICENSE:=BSD-2-Clause
+PKG_LICENSE_FILES:=LICENSE LICENSE.contrib LICENSE.third
+
+PKG_SOURCE:=sslsplit.tar.gz
+PKG_SOURCE_URL:=https://github.com/droe/sslsplit.git
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_VERSION:=0.5.5
+
+PKG_INSTALL:=1
+
+PKG_MAINTAINER:=Andreas Nilsen <adde88@gmail.com>
+
 include $(INCLUDE_DIR)/package.mk
 
 define Package/sslsplit
   SECTION:=net
   CATEGORY:=Network
-  SUBMENU:=Web Servers/Proxies
+  DEPENDS:=+libevent2 +libopenssl +libevent2-openssl +libevent2-pthreads +libnet-1.2.x +libpcap +USE_MUSL:musl-fts
   TITLE:=Transparent SSL/TLS interception
-  DEPENDS:=+libopenssl +libevent2 +libevent2-openssl +libevent2-pthreads +libopenssl +libpthread +musl-fts +libpcap +libnet-1.2.x
+  URL:=https://www.roe.ch/SSLsplit
 endef
 
 define Package/sslsplit/description
-	SSLsplit is a tool for man-in-the-middle attacks against SSL/TLS encrypted network connections.
-	It is intended to be useful for network forensics, application security analysis and penetration testing.
+  Transparent SSL/TLS interception
 endef
 
-define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) ./src $(PKG_BUILD_DIR)/
-endef
-
-MAKE_PATH:=src
+MAKE_FLAGS += prefix=/usr \
+	OSNAME=Linux
 
 define Package/sslsplit/install
-	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/sslsplit $(1)/usr/bin/
+	$(INSTALL_DIR) $(1)/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/local/bin/sslsplit $(1)/bin/
 endef
 
 $(eval $(call BuildPackage,sslsplit))
