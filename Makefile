@@ -25,10 +25,7 @@ define Build/Prepare
 	$(CP) ./src $(PKG_BUILD_DIR)/
 endef
 
-LIBS='-lfts'
 MAKE_PATH:=src
-
-#TARGET_LDLAGS += -lfts
 
 define Package/sslsplit/install
 	$(INSTALL_DIR) $(1)/usr/bin
