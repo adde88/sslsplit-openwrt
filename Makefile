@@ -9,14 +9,12 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=sslsplit
 PKG_VERSION:=0.5.5
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_LICENSE:=BSD-2-Clause
 PKG_LICENSE_FILES:=LICENSE LICENSE.contrib LICENSE.third
 
-PKG_SOURCE:=sslsplit.tar.gz
-PKG_SOURCE_URL:=https://github.com/droe/sslsplit.git
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=0.5.5
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
 
 PKG_INSTALL:=1
 
@@ -39,9 +37,16 @@ endef
 MAKE_FLAGS += prefix=/usr \
 	OSNAME=Linux
 
+define Build/Prepare
+	mkdir -p $(PKG_BUILD_DIR)
+	$(CP) -rf ./src/* $(PKG_BUILD_DIR)/
+endef
+
 define Package/sslsplit/install
-	$(INSTALL_DIR) $(1)/bin
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/local/bin/sslsplit $(1)/bin/
+	$(INSTALL_DIR)	$(1)/bin
+	$(INSTALL_DIR)	$(1)/etc/sslsplit
+	$(INSTALL_BIN)	$(PKG_INSTALL_DIR)/usr/local/bin/sslsplit			$(1)/bin/
+	$(INSTALL_CONF) $(PKG_INSTALL_DIR)/usr/local/etc/sslsplit/sslsplit.conf.sample	$(1)/etc/sslsplit/
 endef
 
 $(eval $(call BuildPackage,sslsplit))

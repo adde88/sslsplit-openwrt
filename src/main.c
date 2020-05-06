@@ -696,7 +696,7 @@ main(int argc, char *argv[])
 			               "certs.\n", DFLT_LEAFKEY_RSABITS);
 		}
 	}
-	if (opts->certgendir) {
+	if (opts->certgendir && opts->leafkey) {
 		char *keyid, *keyfn;
 		int prv;
 		FILE *keyf;
@@ -911,6 +911,8 @@ out_log_failed:
 out_parent:
 	opts_free(opts);
 	ssl_fini();
+	if (natengine)
+		free(natengine);
 	return rv;
 }
 

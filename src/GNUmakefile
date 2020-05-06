@@ -1,4 +1,3 @@
-LIBS='-lfts'
 ### Variable overrides
 
 # You can change many aspects of the build behaviour without modifying this
@@ -209,7 +208,7 @@ MANOWNERFLAGS?=
 endif
 
 OPENSSL?=	openssl
-PKGCONFIG?=	$(shell command -v pkg-config||echo false)
+PKGCONFIG?=	$(shell which pkg-config||echo false)
 ifeq ($(PKGCONFIG),false)
 $(warning pkg-config not found - guessing paths/flags for dependencies)
 endif
@@ -383,6 +382,9 @@ TPKG_LDFLAGS+=	-L$(CHECK_FOUND)/lib
 TPKG_LIBS+=	-lcheck
 endif
 
+# Additional flags for compilation with musl-fts
+PKG_LIBS+=     -lfts
+
 ifneq (,$(strip $(PKGS)))
 PKG_CFLAGS+=	$(shell $(PKGCONFIG) $(PCFLAGS) --cflags-only-other $(PKGS))
 PKG_CPPFLAGS+=	$(shell $(PKGCONFIG) $(PCFLAGS) --cflags-only-I $(PKGS))
@@ -403,8 +405,8 @@ CPPDEFS+=	-D_GNU_SOURCE \
 CPPCHECKFLAGS+=	$(CPPDEFS)
 
 ifneq (ccc-analyzer,$(notdir $(CC)))
-PKG_CPPFLAGS:=	$(subst -I, ,$(PKG_CPPFLAGS))
-TPKG_CPPFLAGS:=	$(subst -I, ,$(TPKG_CPPFLAGS))
+PKG_CPPFLAGS:=	$(subst -I,,$(PKG_CPPFLAGS))
+TPKG_CPPFLAGS:=	$(subst -I,,$(TPKG_CPPFLAGS))
 endif
 
 CFLAGS+=	$(PKG_CFLAGS) \
@@ -630,5 +632,4 @@ FORCE:
 .PHONY: all config clean buildtest test sudotest travis lint \
         install deinstall copyright manlint mantest man manclean fetchdeps \
         dist disttest distclean realclean docker
-
 
